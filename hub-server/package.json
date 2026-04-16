@@ -1,0 +1,16 @@
+{
+  "name": "forge-hub-server",
+  "version": "0.1.0",
+  "description": "Forge Hub Server — 多通道消息总线，常驻进程",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun hub.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "forge-hub-client",
+  "version": "0.1.0",
+  "description": "Forge Hub Client — 通用 MCP channel，连接 Hub 接收所有通道消息",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun hub-channel.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

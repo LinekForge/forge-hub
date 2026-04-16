@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hub": {
+      "command": "bun",
+      "args": ["./hub-channel.ts"],
+      "env": {}
+    }
+  }
+}

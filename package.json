@@ -1,0 +1,36 @@
+{
+  "name": "forge-hub",
+  "version": "0.2.0",
+  "description": "Multi-channel messaging hub for Claude Code — let your AI agent receive WeChat / Telegram / Feishu / iMessage and request remote approval from your phone.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "scripts": {
+    "self-test": "bun hub-test-harness/harness.ts",
+    "doctor": "bun cli.ts doctor"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LinekForge/forge-hub.git"
+  },
+  "homepage": "https://github.com/LinekForge/forge-hub",
+  "author": "Linek & Forge",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "mcp",
+    "channel",
+    "hub",
+    "wechat",
+    "telegram",
+    "feishu",
+    "imessage",
+    "remote-approval",
+    "anthropic"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Log / PID files (defensive—repo 内不该有，兜底)
+*.log
+*.pid
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local config / secrets
+.env
+.env.local
+*.local.json
+*.bak.*
+
+# Test output
+/tmp/
+.tap/
+coverage/
