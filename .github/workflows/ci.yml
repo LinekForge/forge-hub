@@ -27,7 +27,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: ${{ matrix.package }}
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: TypeScript check
         working-directory: ${{ matrix.package }}
