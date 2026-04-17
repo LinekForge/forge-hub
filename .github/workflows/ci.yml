@@ -1,0 +1,34 @@
+name: CI
+
+# Minimal CI: type-check hub-server and hub-client on every PR and push to main.
+# Reason: open-source contributors shouldn't wait for maintainer review to find
+# out if tsc is happy with their change. Clean-env typecheck also catches the
+# dev-env bias (e.g. missing imports that happen to resolve locally).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: Type check (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [hub-server, hub-client]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.package }}
+        run: bun install --frozen-lockfile
+
+      - name: TypeScript check
+        working-directory: ${{ matrix.package }}
+        run: bunx tsc --noEmit
