@@ -320,8 +320,16 @@ export function startServer(config: HubConfig): void {
           const currentConfig = getCurrentConfig();
           const channels = currentConfig.approval_channels ?? [];
           if (channels.length === 0) {
+            // Actionable error: surface next step to the agent. In server:hub mode CC
+            // auto-denies on this 503 (see hub-channel.ts autoDenyPermission) — without
+            // the fix hint the user sees "Tool use rejected" with no idea how to unblock.
             return Response.json(
-              { success: false, error: "no approval_channels configured" },
+              {
+                success: false,
+                error:
+                  "no approval_channels configured — edit ~/.forge-hub/hub-config.json and set approval_channels (e.g. [\"wechat\"]); " +
+                  "server:hub mode requires at least one channel to route approval prompts to. See 配置.md §审批推送配置.",
+              },
               { status: 503 },
             );
           }

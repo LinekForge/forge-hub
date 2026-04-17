@@ -162,6 +162,25 @@ function installCmd(): void {
     if (fs.existsSync(fhBin)) fs.unlinkSync(fhBin);
     fs.symlinkSync(path.join(PKG_ROOT, "forge-cli", "forge.ts"), fhBin);
     log(`✓ fh CLI symlink: ${fhBin}（用 \`fh hub allow/status/peers\` 等）`);
+
+  // S1b: surface approval_channels prerequisite for server:hub mode.
+  // Without this hint, first-time users launching with `--dangerously-load-development-channels
+  // server:hub` will hit auto-deny on every Bash tool call (no approval_channels → 503 →
+  // hub-channel autoDenyPermission), with no clue what to fix.
+  try {
+    const hubConfigPath = path.join(HUB_DIR, "hub-config.json");
+    const cfg = fs.existsSync(hubConfigPath)
+      ? JSON.parse(fs.readFileSync(hubConfigPath, "utf-8"))
+      : {};
+    const approvalChannels = Array.isArray(cfg.approval_channels) ? cfg.approval_channels : [];
+    if (approvalChannels.length === 0) {
+      log("");
+      log("💡 提示：要用 server:hub 模式（远程审批 → 手机）需要配 approval_channels：");
+      log("   编辑 ~/.forge-hub/hub-config.json 加：");
+      log('     { "approval_channels": ["wechat"] }   // 或你配好的其他通道');
+      log("   不配的话，server:hub 模式下所有需要审批的工具会被 auto-deny。详见 配置.md §审批推送配置。");
+    }
+  } catch { /* cfg 读取失败不阻塞 install，doctor 会再次报 */ }
   } catch (err) {
     console.warn(`⚠️  fh symlink 失败: ${String(err)}\n   你可以手动: ln -sf ${path.join(PKG_ROOT, "forge-cli/forge.ts")} ${fhBin}`);
   }
@@ -285,6 +304,26 @@ function doctorCmd(): void {
   check("MCP registered", isMcpRegistered(), "Hub channel 没在 ~/.claude.json");
   check("ffmpeg available（语音功能需要）", which("ffmpeg") !== null || !!process.env.FORGE_FFMPEG_PATH, "brew install ffmpeg 或设 FORGE_FFMPEG_PATH");
   check("lark-cli available（飞书通道需要）", which("lark-cli") !== null || !!process.env.FORGE_LARK_CLI, "npm i -g @larksuite/cli 或设 FORGE_LARK_CLI");
+
+  // S1c: approval_channels check — informational warning, not a hard fail.
+  // Not everyone uses server:hub mode, so empty approval_channels is legitimate for
+  // local MCP tool usage. But surface it clearly so server:hub users can self-diagnose
+  // the auto-deny trap.
+  try {
+    const hubConfigPath = path.join(HUB_DIR, "hub-config.json");
+    const cfg = fs.existsSync(hubConfigPath)
+      ? JSON.parse(fs.readFileSync(hubConfigPath, "utf-8"))
+      : {};
+    const approvalChannels = Array.isArray(cfg.approval_channels) ? cfg.approval_channels : [];
+    if (approvalChannels.length > 0) {
+      log(`✓ approval_channels configured: [${approvalChannels.join(", ")}]`);
+    } else {
+      log("⚠️  approval_channels 未配置（仅 server:hub 模式需要）");
+      log("   server:hub 模式下需要审批的工具会被 auto-deny。编辑 ~/.forge-hub/hub-config.json 加 approval_channels，或仅用本地 MCP tools 模式可以忽略。");
+    }
+  } catch {
+    log("⚠️  hub-config.json 读取失败，approval_channels 状态未知");
+  }
 
   // Hub running?
   try {
