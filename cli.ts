@@ -371,8 +371,20 @@ function registerMcp(): void {
     // 相同路径——不是真冲突，是重装 refresh，放行
   }
 
+  // Resolve bun to an absolute path for the MCP server command.
+  // Claude Code spawns MCP subprocesses without inheriting the user's shell PATH
+  // (e.g. launchd-started CC sees only the system default PATH). A bare "bun"
+  // command would fail to resolve when bun is installed under ~/.bun/bin/ or
+  // other non-system paths, resulting in the MCP server silently failing to
+  // start. process.execPath is the bun binary currently running this install
+  // script — using it guarantees the same bun that ran install will be used
+  // by the MCP subprocess.
+  const bunPath = process.execPath && process.execPath.includes("bun")
+    ? process.execPath
+    : which("bun") ?? "bun";
+
   mcpServers.hub = {
-    command: "bun",
+    command: bunPath,
     args: expectedArgs,
     env: {},
   };
