@@ -18,7 +18,7 @@
 
 ## 前置要求
 
-- [Bun](https://bun.sh) >= 1.0
+- [Bun](https://bun.sh) >= 1.0 · **确保 `which bun` 有输出**，bun 默认装到 `~/.bun/bin/`，首次装完需要把 `export PATH="$HOME/.bun/bin:$PATH"` 加进 `~/.zshrc`（或等价的 shell rc）。装 forge-hub 时 bun 必须在当前 session PATH 里。
 - [Claude Code](https://code.claude.com) >= 2.1.81
 - macOS（Linux 大部分功能可用，iMessage 通道仅 Mac）
 
@@ -57,6 +57,12 @@ claude --dangerously-load-development-channels server:hub
 
 > [!IMPORTANT]
 > `--dangerously-load-development-channels` 是 Anthropic Channels 协议的 opt-in flag——详见 [Channels Reference](https://code.claude.com/docs/en/channels-reference)。**最低 Claude Code 版本：2.1.81**。
+
+> [!IMPORTANT]
+> **`server:hub` 模式需要配 `approval_channels`**。Claude 跑 Bash / Write / Edit 等工具时会请求审批，hub-server 根据 `approval_channels` 把请求推到手机。没配的话**每个工具调用都会被 auto-deny**——用户看到 "Tool use rejected"。编辑 `~/.forge-hub/hub-config.json` 加 `{ "approval_channels": ["wechat"] }` 或你已配好的其他通道。详见 [配置.md §审批推送配置](配置.md)。
+
+> [!NOTE]
+> **首次调用 `hub_reply` / `hub_send_file` 等 MCP 工具时 Claude Code 会弹审批**——属于 CC 默认的 MCP tool approval 行为，不是 forge-hub 的设计。approve 一次，或在 CC 里 `/allowed-tools` 添加 `mcp__hub__hub_reply` / `mcp__hub__hub_send_file` / `mcp__hub__hub_send_voice` 到全局允许列表，之后就不再弹。
 
 > [!TIP]
 > **想用但不想自己装？** 把这个 GitHub 链接发给你的 agent（Claude Code / OpenClaw / Cursor / 任何能读 README + 跑 shell 的），它会照上面的 runbook 装起来——需要你手动操作（扫码 / Touch ID / 授权 Full Disk Access）时会停下让你做。
