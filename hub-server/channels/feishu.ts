@@ -211,7 +211,11 @@ function startSubscription(): void {
 async function handleMessage(event: Record<string, unknown>): Promise<void> {
   // Compact format: type (not event_type), content is plain text
   const eventType = (event.type ?? "") as string;
-  if (!eventType.includes("im.message")) return;
+  if (!eventType.includes("im.message")) {
+    // Graceful ignore: 非消息事件（如 bot_p2p_chat_entered_v1）不计入失败
+    if (eventType) hub.log(`[飞书] 忽略非消息事件: ${eventType}`);
+    return;
+  }
 
   const senderId = (event.sender_id ?? "") as string;
   const chatId = (event.chat_id ?? "") as string;
@@ -282,7 +286,7 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   hub.pushMessage({
     channel: "feishu",
     from: displayName,
-    fromId: chatId,
+    fromId: senderId,
     content,
     raw: { sender_id: senderId, message_type: msgType },
   });
@@ -328,10 +332,13 @@ const plugin: ChannelPlugin = {
 
   async send({ to, content, type, filePath }): Promise<SendResult> {
     try {
+      // P2P 单聊: to 是 ou_（用户 ID）→ --user-id；群聊: to 是 oc_（会话 ID）→ --chat-id
+      const idFlag = to.startsWith("oc_") ? "--chat-id" : "--user-id";
+
       if (type === "text") {
         execFileSync(LARK_CLI, [
           "im", "+messages-send",
-          "--chat-id", to,
+          idFlag, to,
           "--text", content,
           "--as", "bot",
         ], { encoding: "utf-8", timeout: 15000 });
@@ -344,7 +351,7 @@ const plugin: ChannelPlugin = {
       if (type === "file" && filePath) {
         execFileSync(LARK_CLI, [
           "im", "+messages-send",
-          "--chat-id", to,
+          idFlag, to,
           "--file", filePath,
           "--as", "bot",
         ], { encoding: "utf-8", timeout: 30000 });
@@ -359,7 +366,7 @@ const plugin: ChannelPlugin = {
         // lark-cli 的 --audio 接 basename，实际文件要在 cwd 里找。
         execFileSync(LARK_CLI, [
           "im", "+messages-send",
-          "--chat-id", to,
+          idFlag, to,
           "--audio", basename(filePath),
           "--as", "bot",
         ], { encoding: "utf-8", timeout: 30000, cwd: dirname(filePath) });
