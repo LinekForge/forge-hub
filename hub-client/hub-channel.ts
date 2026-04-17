@@ -121,7 +121,13 @@ function readAndClearSessionConfig(): SessionConfig | null {
     logError(`session config layer 3 (instance-identities.json) 读失败: ${String(err)}`);
   }
 
-  return null;
+  // No launcher wrote session config — default to channel mode listening to all channels.
+  // Historical design assumed a launcher (e.g. menubar app) would write next-session.json before
+  // each `claude server:hub` invocation. Open-source users start hub-channel directly without
+  // a launcher, so without this default they'd land in tool mode and receive no messages despite
+  // having configured channels. "all" keyword is resolved to `undefined` by instance-manager (see
+  // instance-manager.ts handleWsMessage), which means "subscribe to every channel".
+  return { channels: ["all"] };
 }
 
 const SESSION_CONFIG = readAndClearSessionConfig();
