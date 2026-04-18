@@ -29,14 +29,12 @@ class ForgeHub < Formula
     SH
   end
 
-  def post_install
-    ohai "Running forge-hub install..."
-    system bin/"forge-hub", "install"
-  end
-
   def caveats
     <<~EOS
-      Forge Hub has been installed and the hub server is running via launchd.
+      Forge Hub is installed. Run the one-time setup to deploy the hub server,
+      MCP registration, and launchd service:
+
+        forge-hub install
 
       Next steps:
         1. Configure channel credentials (WeChat / Telegram / Feishu / iMessage):
