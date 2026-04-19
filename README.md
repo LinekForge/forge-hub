@@ -18,20 +18,31 @@
 
 ## 前置要求
 
-- [Bun](https://bun.sh) >= 1.0 · **确保 `which bun` 有输出**，bun 默认装到 `~/.bun/bin/`，首次装完需要把 `export PATH="$HOME/.bun/bin:$PATH"` 加进 `~/.zshrc`（或等价的 shell rc）。装 forge-hub 时 bun 必须在当前 session PATH 里。
 - [Claude Code](https://code.claude.com) >= 2.1.81
 - macOS（Linux 大部分功能可用，iMessage 通道仅 Mac）
+- [Bun](https://bun.sh) >= 1.0 · **源码安装必需**——Homebrew 装法 brew 自动帮装，不用管。源码装时请确保 `which bun` 有输出；bun 默认装到 `~/.bun/bin/`，首次装完需把 `export PATH="$HOME/.bun/bin:$PATH"` 加进 `~/.zshrc`（或等价 shell rc）。
 
 ## 快速开始
 
-**1. 装**
+**1. 装**（推荐 Homebrew · Mac 最快路径）
+
+```bash
+brew tap LinekForge/forge-hub https://github.com/LinekForge/forge-hub
+brew install forge-hub
+forge-hub install   # 部署脚本在 Homebrew sandbox 里跑不了，装完手动跑一次
+```
+
+<details>
+<summary><strong>或从源码装</strong>（想 customize / 非 Mac / CI 场景）</summary>
 
 ```bash
 git clone https://github.com/LinekForge/forge-hub.git ~/forge-hub
 cd ~/forge-hub && bun cli.ts install
 ```
 
-Install 脚本会部署 hub-server、hub-client、launchd plist、MCP 注册。
+</details>
+
+`forge-hub install` 部署 hub-server、hub-client、launchd plist、MCP 注册。
 
 **2. 配通道凭证**（按你要用的）
 

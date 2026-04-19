@@ -3,7 +3,7 @@ class ForgeHub < Formula
   homepage "https://github.com/LinekForge/forge-hub"
   url "https://github.com/LinekForge/forge-hub.git",
       tag:      "v0.2.0",
-      revision: "HEAD"
+      revision: "20e0e4449c60235b91a50e5876acf70f6282cfe7"
   license "MIT"
   head "https://github.com/LinekForge/forge-hub.git", branch: "main"
 
@@ -15,12 +15,9 @@ class ForgeHub < Formula
     libexec.install Dir["*"]
     libexec.install ".gitignore" if File.exist?(".gitignore")
 
-    # Run bun install for hub-server and hub-client dependencies
-    cd libexec do
-      # hub-server deps are installed by cli.ts into ~/.forge-hub,
-      # but we also need hub-client deps bundled for MCP registration.
-      # The actual deploy is done by `forge-hub install` post-install.
-    end
+    # Note: hub-server / hub-client deps are installed by cli.ts into
+    # ~/.forge-hub and ~/.claude/channels/hub/ when the user runs the
+    # post-install `forge-hub install` step (see caveats).
 
     # Create a wrapper script that invokes cli.ts via bun
     (bin/"forge-hub").write <<~SH
