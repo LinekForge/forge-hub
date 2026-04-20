@@ -225,7 +225,9 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   if (!senderId || !chatId) return;
 
   // Check allowlist — 非主人拒收 + push system 告警（统一 4 通道模式）
-  if (!isAllowed(senderId)) {
+  // 群消息：群 chat_id (oc_) 在白名单即视为授权（群成员无需单独加白名单）
+  const isGroupMessage = chatId.startsWith("oc_");
+  if (!isAllowed(senderId) && !(isGroupMessage && isAllowed(chatId))) {
     const rawPreview = (event.content ?? "") as string;
     hub.logError(`⛔ 拒绝未授权: ${senderName} (${senderId}), 原文前 50: "${rawPreview.slice(0, 50)}"`);
     hub.pushMessage({
@@ -242,15 +244,15 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const messageId = (event.message_id ?? event.id ?? "") as string;
   let content = (event.content ?? "") as string;
 
-  // Compact mode: image key is in content as "[Image: img_v3_xxx]"
-  const imageKeyMatch = content.match(/\[Image:\s*(img_[^\]]+)\]/);
+  // Compact mode: image key is in content as "[Image: img_v3_xxx]" or "[图片: img_v3_xxx]"
+  const imageKeyMatch = content.match(/\[(?:Image|图片):\s*(img_[^\]]+)\]/);
   if (imageKeyMatch && messageId) {
     const imageKey = imageKeyMatch[1];
     const filePath = downloadFeishuMedia(messageId, "image", imageKey);
     content = filePath ? `[图片] ${filePath}` : `[图片: ${imageKey}]`;
   } else if (msgType === "file" && messageId) {
     // Compact mode: file key might be in content as "[File: file_v3_xxx]"
-    const fileKeyMatch = content.match(/\[File:\s*(file_[^\]]+)\]/);
+    const fileKeyMatch = content.match(/\[(?:File|文件):\s*(file_[^\]]+)\]/);
     const fileKey = fileKeyMatch?.[1] ?? (event.file_key ?? "") as string;
     const fileName = (event.file_name ?? "file") as string;
     if (fileKey) {
@@ -283,12 +285,14 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const displayName = getNickname(senderId) || senderName;
   hub.log(`← ${displayName}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
 
+  // 群消息用 chat_id (oc_) 作为 fromId，这样 reply 会发到群里而不是私聊
+  const replyTo = chatId.startsWith("oc_") ? chatId : senderId;
   hub.pushMessage({
     channel: "feishu",
     from: displayName,
-    fromId: senderId,
+    fromId: replyTo,
     content,
-    raw: { sender_id: senderId, message_type: msgType },
+    raw: { sender_id: senderId, chat_id: chatId, message_type: msgType },
   });
 
   // History recorded by Hub layer
