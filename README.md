@@ -218,6 +218,11 @@ forge-hub install / uninstall / doctor
 | [examples/echo.ts](examples/echo.ts) | 最小通道示例（~150 行） |
 | [examples/pretooluse-guard.sh](examples/pretooluse-guard.sh) | 远程审批 hook 示例 |
 
+## 贡献者
+
+- [@lightallspiritthing](https://github.com/lightallspiritthing) — 飞书 P2P 单聊修复（[#1](https://github.com/LinekForge/forge-hub/pull/1)）· Homebrew Formula（[#2](https://github.com/LinekForge/forge-hub/pull/2)）
+- [@wangviola7](https://github.com/wangviola7) — 飞书群消息 auth / reply routing / i18n regex（[#3](https://github.com/LinekForge/forge-hub/pull/3)）
+
 ## 致谢与免责
 
 本项目为社区独立作品，与 Anthropic、Tencent、ByteDance / Larksuite 无关。
