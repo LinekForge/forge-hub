@@ -7,6 +7,7 @@
 - **多实例路由** — 多个 Claude Code 窗口同时跑，`@tag` 找对的那个，互不串线
 - **紧急锁定** — 任意通道发自定暗号，立即冻结所有远程
 - **通道自愈** — watchdog 每 2 分钟扫描，unhealthy 通道自动重启
+- **定时引擎** — [Forge Engine](forge-engine/) 按 schedule 给 Claude 发心跳、提醒、指令，agent 不再只被动回应
 
 基于 Anthropic 官方 [Channels 协议](https://code.claude.com/docs/en/channels-reference) + 各平台官方 API（Telegram Bot API / Lark Open API / Tencent iLink）。不逆向、不绕开、不盗 token。
 
@@ -116,6 +117,7 @@ chmod +x ~/.claude/hooks/pretooluse-guard.sh
 | `hub_send_file` | 发文件 / 图片 / 视频 |
 | `hub_send_voice` | TTS 合成语音（需配 `FORGE_HUB_TTS_HOOK`） |
 | `hub_replay_history` | 拉某通道最近 N 条历史 |
+| `engine_add_task` | 动态添加定时任务（"一小时后提醒我做 X"）— 来自 [Forge Engine](forge-engine/) |
 
 > 出站成功但通道 degraded / 入站久无消息时，MCP 工具会在返回里带 `⚠️` warning——agent 可以决定换通道重发或向用户确认送达。
 
