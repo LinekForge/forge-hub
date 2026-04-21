@@ -1,0 +1,21 @@
+{
+  "name": "forge-engine",
+  "version": "0.1.0",
+  "description": "Scheduled action engine for AI agents — heartbeats, reminders, and timed instructions via MCP channel",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun engine-channel.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "author": "Linek & Forge",
+  "license": "MIT"
+}

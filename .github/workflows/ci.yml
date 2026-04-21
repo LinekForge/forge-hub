@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [hub-server, hub-client]
+        package: [hub-server, hub-client, forge-engine]
     steps:
       - uses: actions/checkout@v4
 
