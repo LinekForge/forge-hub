@@ -615,6 +615,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
   // hub_reply
   if (req.params.name === "hub_reply") {
     const { channel, to, text: msg } = req.params.arguments as { channel: string; to: string; text: string };
+    if (!msg) return text("错误: 缺少 text 参数（参数名是 text，不是 content）");
     try {
       const res = await fetch(`${HUB_URL}/send`, {
         method: "POST",

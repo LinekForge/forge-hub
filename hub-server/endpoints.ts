@@ -466,6 +466,10 @@ export function startServer(config: HubConfig): void {
             instance?: string;
           };
 
+          if (!body.text) {
+            return Response.json({ success: false, error: "缺少 text 参数" }, { status: 400 });
+          }
+
           // Instance-to-instance communication: channel="hub"
           if (body.channel === "hub") {
             const instances = getInstances();
