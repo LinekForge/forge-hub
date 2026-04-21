@@ -498,13 +498,15 @@ mcpServer.setNotificationHandler(PermissionRequestNotification, async ({ params 
       body: JSON.stringify({ ...params, instance: INSTANCE_ID }),
     });
 
-    // HTTP 错误（4xx/5xx）——优先于 .json() 处理，因为错误响应可能是 HTML
     if (!res.ok) {
       const body = await res.text().catch(() => "<read body failed>");
-      logError(
-        `permission_request HTTP ${res.status}: ${body.slice(0, 200)} (req=${params.request_id})`,
-      );
-      await autoDenyPermission(params.request_id, `HTTP ${res.status}`);
+      let reason = `HTTP ${res.status}`;
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.error) reason = `${reason}: ${String(parsed.error).slice(0, 300)}`;
+      } catch { /* body not JSON, use status only */ }
+      logError(`permission_request ${reason} (req=${params.request_id})`);
+      await autoDenyPermission(params.request_id, reason);
       return;
     }
 

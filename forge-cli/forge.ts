@@ -571,14 +571,18 @@ function loadAllowlist(channel: string): { allowed: { id: string; nickname: stri
 function saveAllowlist(channel: string, allowlist: { allowed: { id: string; nickname: string }[] }): void {
   const dir = path.join(HUB_STATE, channel);
   fs.mkdirSync(dir, { recursive: true });
-  // Security (redteam A2): chmod 700 dir + 600 file——allowlist 完整性决定
-  // 远程审批授权是否可伪造。any user-writable 就被 attacker 追加身份。
   try { fs.chmodSync(dir, 0o700); } catch { /* ignore — non-fatal */ }
-  // Never save auto_allow_next — it's been removed for security
   const clean = { allowed: allowlist.allowed };
   const allowlistPath = path.join(dir, "allowlist.json");
-  fs.writeFileSync(allowlistPath, JSON.stringify(clean, null, 2), { mode: 0o600 });
-  try { fs.chmodSync(allowlistPath, 0o600); } catch { /* ignore */ }
+  const tmp = `${allowlistPath}.tmp.${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(clean, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, allowlistPath);
+    try { fs.chmodSync(allowlistPath, 0o600); } catch { /* ignore */ }
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 function appendAudit(action: string, channel: string, id: string, nickname: string): void {
@@ -798,6 +802,60 @@ function hubPresetRemove(args: string[]) {
 // NOTE: 定时任务调度不属于 Hub 能力范畴。如需类似功能请用 system cron / launchd
 // / 自己写 plugin。forge-hub 专注消息通道 + 远程审批。
 
+// ── Setup Wizard ─────────────────────────────────────────────────────────────
+
+async function hubSetup(): Promise<void> {
+  const home = process.env.HOME ?? "~";
+  const configPath = path.join(home, ".forge-hub", "hub-config.json");
+
+  console.log("Forge Hub 首次配置向导\n");
+
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    try { config = JSON.parse(fs.readFileSync(configPath, "utf-8")); } catch { /* start fresh */ }
+    console.log("已有 hub-config.json，将在现有配置上补充。\n");
+  }
+
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  const channels = ["wechat", "telegram", "feishu", "imessage"];
+  const existing = (config.approval_channels ?? []) as string[];
+
+  console.log("可用通道: wechat (wx) / telegram (tg) / feishu (fs) / imessage (im)");
+  if (existing.length > 0) {
+    console.log(`当前 approval_channels: [${existing.join(", ")}]`);
+  }
+
+  const answer = await rl.question("\n审批推送到哪些通道？（逗号分隔，如 wx,tg；直接回车保持现有）: ");
+  rl.close();
+
+  if (answer.trim()) {
+    const selected = answer.split(/[,\s]+/).map((s) => resolveChannel(s.trim())).filter((c) => channels.includes(c));
+    if (selected.length === 0) {
+      console.log("❌ 没有识别到有效的通道名。有效名: wechat/wx, telegram/tg, feishu/fs, imessage/im");
+      return;
+    }
+    config.approval_channels = selected;
+  } else if (existing.length === 0) {
+    console.log("⚠ 未设置 approval_channels，远程审批会 auto-deny。稍后可编辑 ~/.forge-hub/hub-config.json 手动添加。");
+  }
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const tmp = `${configPath}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), "utf-8");
+  fs.renameSync(tmp, configPath);
+  console.log(`\n✓ 已写入 ${configPath}`);
+
+  if ((config.approval_channels as string[] | undefined)?.length) {
+    console.log(`  approval_channels: [${(config.approval_channels as string[]).join(", ")}]`);
+  }
+
+  console.log("\n下一步: 授权你的第一个联系人（从 hub log 里找到 sender_id）:");
+  console.log("  fh hub allow <channel> <id> <nickname>\n");
+  console.log("例: fh hub allow wechat ou_xxxxx 小明");
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 const [domain, command, ...rest] = process.argv.slice(2);
@@ -806,6 +864,7 @@ if (!domain) {
   console.log(`forge — Forge 系统管理工具
 
 用法:
+  fh hub setup           首次配置向导（设置 approval_channels）
   fh hub lock            紧急锁定（关闭所有远程通道）
   fh hub unlock          解锁
   fh hub set-lock-phrase <暗号>  设置锁定暗号
@@ -835,6 +894,7 @@ if (!domain) {
 
 if (domain === "hub") {
   switch (command) {
+    case "setup": await hubSetup(); break;
     case "lock": await hubLock(); break;
     case "unlock": await hubUnlock(); break;
     case "set-lock-phrase": hubSetLockPhrase(rest); break;

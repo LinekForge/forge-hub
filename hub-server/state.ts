@@ -26,15 +26,15 @@ export function loadChannelState(channel: string, key: string): unknown {
 export function saveChannelState(channel: string, key: string, value: unknown): void {
   const dir = path.join(STATE_DIR, channel);
   const filePath = path.join(dir, `${key}.json`);
+  const tmp = `${filePath}.tmp.${process.pid}`;
   try {
     fs.mkdirSync(dir, { recursive: true });
-    // Security (redteam A4): state 文件含敏感数据（pending 审批 ids、context
-    // tokens、per-channel allowlist 等）——mode 0o600 防 umask 默认 644 泄漏。
-    // 目录 chmod 700 由 auditAllowlistPerms 管。
     try { fs.chmodSync(dir, 0o700); } catch { /* ignore */ }
-    fs.writeFileSync(filePath, JSON.stringify(value, null, 2), { mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, filePath);
     try { fs.chmodSync(filePath, 0o600); } catch { /* ignore */ }
   } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     logError(`写入状态 ${channel}/${key} 失败: ${String(err)}`);
   }
 }

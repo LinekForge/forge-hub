@@ -368,6 +368,7 @@ import { filterBySubscription } from "./resolve.js";
 import { startServer } from "./endpoints.js";
 import { setCurrentConfig, getCurrentConfig } from "./hub-state.js";
 import { startChannelWatchdog } from "./channel-watchdog.js";
+import { loadAllowlist } from "./state.js";
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
@@ -385,6 +386,10 @@ async function main() {
 
   const config = loadConfig();
   setCurrentConfig(config);
+
+  if (!config.approval_channels?.length) {
+    logError("⚠ approval_channels 未配置。远程审批请求会被 auto-deny。运行 fh hub setup 或编辑 ~/.forge-hub/hub-config.json 添加。");
+  }
 
   // Write default config if not exists
   if (!fs.existsSync(CONFIG_FILE)) {
@@ -438,6 +443,13 @@ async function main() {
   // Load channel plugins
   const loaded = await loadChannels(onMessage);
   populateRegistry(loaded.sendMap, loaded.metaMap);
+
+  for (const channelName of loaded.sendMap.keys()) {
+    const al = loadAllowlist(channelName);
+    if (al.allowed.length === 0) {
+      logError(`⚠ 通道 ${channelName} 的 allowlist 为空——远程消息将被全部拒绝。运行 fh hub allow ${channelName} <id> <nickname> 添加授权联系人。`);
+    }
+  }
 
   // Channel watchdog: 每 2 分钟检查 unhealthy 通道并自动 restart
   startChannelWatchdog(onMessage);
