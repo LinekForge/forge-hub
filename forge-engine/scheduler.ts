@@ -10,6 +10,7 @@ import path from "node:path";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
 import {
+  CONFIG_FILE,
   SCHEDULE_FILE,
   SCHEDULE_DIR,
   ACTION_LOG_FILE,
@@ -285,8 +286,7 @@ function checkPauseExpiry(config: ForgeConfig): void {
     if (Date.now() >= new Date(c.pause_until).getTime()) {
       c.enabled = true;
       delete c.pause_until;
-      const configPath = path.join(process.env.HOME ?? "~", ".claude", "channels", "engine", "forge-config.json");
-      try { fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8"); } catch {}
+      try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8"); } catch {}
       log("⏯ Engine 暂停到期，已自动恢复");
     }
   }

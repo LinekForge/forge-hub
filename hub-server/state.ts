@@ -9,7 +9,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { STATE_DIR, logError } from "./config.js";
-import type { Allowlist } from "./types.js";
+import type { AllowEntry, Allowlist } from "./types.js";
+import { isAuthorizedSenderMatch } from "./message-auth.js";
 
 export function loadChannelState(channel: string, key: string): unknown {
   const filePath = path.join(STATE_DIR, channel, `${key}.json`);
@@ -49,10 +50,37 @@ export function loadAllowlist(channel: string): Allowlist {
 
 /** sender id 是否在 allowlist。4 通道使用时保持一致的严格 string 匹配——imessage 对 caseLower 有需求可自行 lowercase 后调 */
 export function isAllowedSender(channel: string, senderId: string): boolean {
-  return loadAllowlist(channel).allowed.some((e) => e.id === senderId);
+  return loadAllowlist(channel).allowed.some((e) => isAuthorizedSenderMatch(channel, senderId, e.id));
 }
 
 /** 查 allowlist 里某 id 对应的 nickname，不存在则 fallback 返回 id 本身 */
 export function getNickname(channel: string, senderId: string): string {
-  return loadAllowlist(channel).allowed.find((e) => e.id === senderId)?.nickname ?? senderId;
+  return findAllowlistEntry(channel, senderId)?.nickname ?? senderId;
+}
+
+export type AllowlistReadResult =
+  | { ok: true; allowlist: Allowlist }
+  | { ok: false; error: string };
+
+export function readAllowlist(channel: string): AllowlistReadResult {
+  const filePath = path.join(STATE_DIR, channel, "allowlist.json");
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, error: `allowlist not found: ${filePath}` };
+  }
+  try {
+    return {
+      ok: true,
+      allowlist: JSON.parse(fs.readFileSync(filePath, "utf-8")) as Allowlist,
+    };
+  } catch (err) {
+    return { ok: false, error: `${String(err)} (path=${filePath})` };
+  }
+}
+
+export function findAllowlistEntry(channel: string, senderId: string): AllowEntry | undefined {
+  return loadAllowlist(channel).allowed.find((entry) => isAuthorizedSenderMatch(channel, senderId, entry.id));
+}
+
+export function getPrimaryAllowlistEntry(channel: string): AllowEntry | undefined {
+  return loadAllowlist(channel).allowed[0];
 }

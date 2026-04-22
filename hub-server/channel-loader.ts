@@ -10,6 +10,7 @@ import path from "node:path";
 
 import { CHANNELS_DIR, log, logError, channelLog, channelLogError, formatUnauthorizedNotice as _formatUnauthorizedNotice } from "./config.js";
 import { loadChannelState, saveChannelState } from "./state.js";
+import { ChannelStartSkipError } from "./types.js";
 import type { ChannelPlugin, HubAPI, InboundMessage } from "./types.js";
 import type { ChannelSendEntry } from "./channel-registry.js";
 
@@ -86,6 +87,7 @@ async function stopWithTimeout(plugin: ChannelPlugin, reason: string): Promise<v
 /** Load 结果三态：plugin（正常加载）、helper（纯 import module，不算通道）、error（文件存在但读取/import 失败） */
 type LoadOutcome =
   | { kind: "plugin"; plugin: ChannelPlugin }
+  | { kind: "skipped"; reason: string }
   | { kind: "helper"; reason: string }
   | { kind: "error"; reason: string };
 
@@ -115,6 +117,9 @@ async function loadPlugin(
   try {
     await plugin.start(hubAPI);
   } catch (err) {
+    if (err instanceof ChannelStartSkipError) {
+      return { kind: "skipped", reason: err.message };
+    }
     return { kind: "error", reason: `start() 抛错: ${String(err)}` };
   }
   log(`🔌 通道已加载: ${plugin.name} (${path.basename(filePath)})`);
@@ -153,6 +158,8 @@ export async function loadChannels(
     if (outcome.kind === "plugin") {
       plugins.set(outcome.plugin.name, outcome.plugin);
       fileToPlugin.set(filePath, outcome.plugin.name);
+    } else if (outcome.kind === "skipped") {
+      log(`⏭ 通道跳过: ${file}（${outcome.reason}）`);
     } else if (outcome.kind === "helper") {
       log(`📄 ${file}: 视为 helper（${outcome.reason}）`);
     } else {
@@ -260,6 +267,17 @@ function startWatcher(onMessage: (msg: InboundMessage) => void): void {
           }
           plugins.set(plugin.name, plugin);
           fileToPlugin.set(filePath, plugin.name);
+        } else if (outcome.kind === "skipped") {
+          const oldName = fileToPlugin.get(filePath);
+          if (oldName) {
+            const old = plugins.get(oldName);
+            if (old) {
+              await stopWithTimeout(old, `热重载跳过前停止旧版 ${oldName}`);
+              plugins.delete(oldName);
+            }
+            fileToPlugin.delete(filePath);
+          }
+          log(`⏭ 通道跳过: ${filename}（${outcome.reason}）`);
         } else if (outcome.kind === "helper") {
           log(`📄 ${filename}: 视为 helper（${outcome.reason}）——不重载`);
         } else {

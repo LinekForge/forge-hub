@@ -5,6 +5,7 @@
  * 所有状态（凭据、sync_buf、context_token、allowlist）由 Hub 管理。
  */
 
+import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendParams, SendResult } from "../types.js";
 import type { AccountData, Allowlist, WeixinMessage } from "./wechat-types.js";
 import { MSG_TYPE_USER } from "./wechat-types.js";
@@ -294,7 +295,7 @@ const plugin: ChannelPlugin = {
     account = hub.getState("account") as AccountData | null;
     if (!account?.token || !account?.baseUrl) {
       hub.logError("未找到微信凭据。请先在 ~/.forge-hub/state/wechat/account.json 配置");
-      return;
+      throw new ChannelStartSkipError("未配置微信 account.json");
     }
 
     hub.log(`账号: ${account.accountId}`);

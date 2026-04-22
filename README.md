@@ -7,7 +7,7 @@
 - **多实例路由** — 多个 Claude Code 窗口同时跑，`@tag` 找对的那个，互不串线
 - **紧急锁定** — 任意通道发自定暗号，立即冻结所有远程
 - **通道自愈** — watchdog 每 2 分钟扫描，unhealthy 通道自动重启
-- **定时引擎** — [Forge Engine](forge-engine/) 按 schedule 给 Claude 发心跳、提醒、指令，agent 不再只被动回应
+- **实验性定时引擎** — [Forge Engine](forge-engine/) 按 schedule 给 Claude 发心跳、提醒、指令；源码已提供，但需要单独手动配置
 
 基于 Anthropic 官方 [Channels 协议](https://code.claude.com/docs/en/channels-reference) + 各平台官方 API（Telegram Bot API / Lark Open API / Tencent iLink）。不逆向、不绕开、不盗 token。
 
@@ -47,6 +47,9 @@ cd ~/forge-hub && bun cli.ts install
 </details>
 
 `forge-hub install` 部署 hub-server、hub-client、launchd plist、MCP 注册。
+
+> [!NOTE]
+> [Forge Engine](forge-engine/) 目前是 **experimental / manual setup**：仓库里已经带源码、MCP server 和 `fh engine ...` CLI，但 **不在 `forge-hub install` 的默认部署面里**。想启用的话，按 [forge-engine/README.md](forge-engine/README.md) 单独注册。
 
 **2. 配通道凭证**（按你要用的）
 
@@ -120,7 +123,7 @@ chmod +x ~/.claude/hooks/pretooluse-guard.sh
 | `hub_send_file` | 发文件 / 图片 / 视频 |
 | `hub_send_voice` | TTS 合成语音（需配 `FORGE_HUB_TTS_HOOK`） |
 | `hub_replay_history` | 拉某通道最近 N 条历史 |
-| `engine_add_task` | 动态添加定时任务（"一小时后提醒我做 X"）— 来自 [Forge Engine](forge-engine/) |
+| `engine_add_task` | 动态添加定时任务（"一小时后提醒我做 X"）— 来自 [Forge Engine](forge-engine/)；需单独启用 engine |
 
 > 出站成功但通道 degraded / 入站久无消息时，MCP 工具会在返回里带 `⚠️` warning——agent 可以决定换通道重发或向用户确认送达。
 
@@ -205,6 +208,10 @@ fh hub pending             # 当前挂起的审批
 fh hub resolve <id>        # 手动清 stale pending
 fh hub self-test           # 跑 8 场景独立测试
 fh hub lock / unlock       # 紧急锁定 / 解锁
+fh engine list             # 查看 engine 定时任务
+fh engine pause 30         # 暂停 30 分钟
+fh engine remove <q|file>  # 删除任务
+fh engine log --read 20    # 查看行动日志
 
 forge-hub install / uninstall / doctor
 ```
@@ -219,6 +226,7 @@ forge-hub install / uninstall / doctor
 | [部署.md](部署.md) | 手动部署 / 升级 / 卸载 / Linux |
 | [架构.md](架构.md) | 组件关系 + 消息流 + 通道矩阵 |
 | [运行时状态.md](运行时状态.md) | 目录结构 + 配置 / 状态文件 schema |
+| [forge-engine/README.md](forge-engine/README.md) | Forge Engine 的实验性手动配置 |
 | [hub-docs/channel-plugin-guide.md](hub-docs/channel-plugin-guide.md) | 写新通道插件 |
 | [examples/echo.ts](examples/echo.ts) | 最小通道示例（~150 行） |
 | [examples/pretooluse-guard.sh](examples/pretooluse-guard.sh) | 远程审批 hook 示例 |

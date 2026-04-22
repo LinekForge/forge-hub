@@ -11,10 +11,11 @@ bun install                     # 顶层 workspace
 (cd hub-server && bun install)  # server deps
 (cd hub-client && bun install)  # MCP client deps
 bun cli.ts doctor               # 自检（看缺什么依赖 / 凭证 / plist）
-bun hub-test-harness/harness.ts # 跑 8 场景 self-test（不碰生产 hub）
+bun hub-test-harness/harness.ts # 直接跑 8 场景 harness
+fh hub self-test                # 走对外 CLI 包装再跑一遍
 ```
 
-改动后必须跑 `bun hub-test-harness/harness.ts` 再提 PR。
+改动后必须跑 `bun hub-test-harness/harness.ts` 和 `fh hub self-test` 再提 PR。
 
 ## 报 Bug / 提需求
 
@@ -37,7 +38,7 @@ GitHub Issues。请带：
 
 ## Code 改动
 
-- **跑 `fh hub self-test`** 确认审批 + crash isolation 8 个场景都过
+- **跑两步 self-test**：`bun hub-test-harness/harness.ts` + `fh hub self-test`
 - **不引入 silent failure**：catch 块至少 `logError(...)`，关键不变量（lock-phrase / allowlist / audit）写失败必须 throw 而不是 fail-open
 - **不引入硬编码路径**：用 `which` 动态查找 + env var 覆盖
 - **不引入私人 ID / 密钥**（test code 也不行）—— PR 自检：
@@ -49,7 +50,7 @@ GitHub Issues。请带：
 ## PR 流程
 
 1. Fork → branch
-2. 改 + 跑 `fh hub self-test`（8 场景 harness，不碰生产 Hub）
+2. 改 + 跑 `bun hub-test-harness/harness.ts` 和 `fh hub self-test`
 3. PR 描述带：动机、改动概要、影响范围、self-test 结果
 
 ## 安全问题

@@ -1,8 +1,11 @@
 # Forge Engine
 
-**定时行动引擎** — 按 schedule 给 Claude Code 发心跳、提醒、指令。让 agent 从"被动回应"变成"主动行动"。
+**实验性定时行动引擎** — 按 schedule 给 Claude Code 发心跳、提醒、指令。让 agent 从"被动回应"变成"主动行动"。
 
 独立的 channel MCP server，通过 [Channels 协议](https://code.claude.com/docs/en/channels-reference) 注入 Claude 上下文。和 Hub Server 配合：Hub 管通道（空间），Engine 管时间。
+
+> [!IMPORTANT]
+> Forge Engine 目前是 **experimental / manual setup**。源码、MCP server 和 CLI 都在仓库里，但 **`forge-hub install` 默认不会部署或注册它**。想用的话，按下面步骤单独配置。
 
 ## 架构
 
@@ -72,6 +75,14 @@ bun install
 }
 ```
 
+4. 用 `fh engine` 管理任务：
+```bash
+fh engine list
+fh engine pause 30
+fh engine remove heartbeat.json
+fh engine log "今天 14:00 已人工处理"
+```
+
 ## Schedule 格式
 
 每个 `engine.d/*.json` 文件包含一个 `schedules` 数组，每条 entry：
@@ -109,6 +120,8 @@ bun install
 | 工具 | 说明 |
 |------|------|
 | `engine_add_task` | Claude 在 session 里动态添加定时任务（如"一小时后提醒我做 X"） |
+
+> `engine_add_task` 只有在你按上面的步骤把 engine MCP server 单独注册进 Claude Code 之后才可用。
 
 ## Handler 插件
 

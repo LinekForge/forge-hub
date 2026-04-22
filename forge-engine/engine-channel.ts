@@ -86,7 +86,7 @@ const server = new Server(
       "通道信息会随每条通知附带，不需要记忆。",
       "",
       "你可以用 engine_add_task 工具动态添加定时任务（比如用户说'一小时后提醒我做什么'）。",
-      "查看和管理任务用 Bash 调 forge CLI（如 `forge engine list`、`forge engine remove <label>`）。",
+      "查看和管理任务用 Bash 调 forge CLI（如 `fh engine list`、`fh engine remove <label>`）。",
     ].join("\n"),
   },
 );

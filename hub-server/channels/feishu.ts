@@ -6,6 +6,7 @@
  * 发消息：lark-cli im +messages-send
  */
 
+import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import { redactSensitive } from "../config.js";
 import { spawn, execFileSync } from "node:child_process";
@@ -334,9 +335,10 @@ const plugin: ChannelPlugin = {
           `请先 \`pkill -f 'lark-cli event'\` 清理（或检查是否有其他 wrapper / 调试进程残留），然后重启 hub。本次飞书通道启动跳过。`,
         );
         plugin.stoppedReason = "config";
-        return;
+        throw new ChannelStartSkipError("已有其他 lark-cli subscriber 正在占用飞书事件流");
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof ChannelStartSkipError) throw err;
       // pgrep exit 1 = no match = safe to continue
     }
 
@@ -345,12 +347,13 @@ const plugin: ChannelPlugin = {
       const result = execFileSync(LARK_CLI, ["auth", "status"], { encoding: "utf-8", timeout: 10000 });
       if (result.includes("not logged in") || result.includes("not configured")) {
         hub.logError("lark-cli 未认证。请运行: lark-cli auth login --domain im,event");
-        return;
+        throw new ChannelStartSkipError("lark-cli 未认证");
       }
       hub.log("lark-cli 认证有效");
     } catch (err) {
+      if (err instanceof ChannelStartSkipError) throw err;
       hub.logError(`lark-cli 不可用: ${String(err)}`);
-      return;
+      throw new ChannelStartSkipError("lark-cli 不可用或未正确安装");
     }
 
     // Start event subscription

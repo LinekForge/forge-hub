@@ -112,6 +112,24 @@ export type ChannelStopReason = "auth" | "config" | "crash" | "network" | "confl
 /** hub 层 watchdog 判断是否自动 restart 的白名单 */
 export const RESTARTABLE_REASONS = new Set<ChannelStopReason>(["network", "conflict", "crash", "cap_reached"]);
 
+/**
+ * 可预期的启动跳过：插件文件存在，但当前机器/当前配置下不 functional。
+ *
+ * 例子：
+ * - Telegram 没 bot token
+ * - WeChat 没 account.json
+ * - Feishu 未认证 / 已有其他 subscriber 抢占
+ * - iMessage 没 Full Disk Access
+ *
+ * loader 看到这个错误会把通道记成 skipped，而不是 loaded 或 fatal error。
+ */
+export class ChannelStartSkipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChannelStartSkipError";
+  }
+}
+
 export interface HubAPI {
   /** 插件收到消息，推给 Hub */
   pushMessage(msg: InboundMessage): void;

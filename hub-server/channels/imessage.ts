@@ -9,6 +9,7 @@
  * - Automation（控制 Messages.app）
  */
 
+import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import { redactSensitive } from "../config.js";
 import { Database } from "bun:sqlite";
@@ -305,7 +306,7 @@ const plugin: ChannelPlugin = {
     } catch (err) {
       hub.logError(`无法读取 ${CHAT_DB}: ${String(err)}`);
       hub.logError("需要 Full Disk Access 权限（系统设置 → 隐私与安全 → 完全磁盘访问权限）");
-      return;
+      throw new ChannelStartSkipError("无法读取 iMessage chat.db（通常是缺 Full Disk Access）");
     }
 
     // Detect self addresses

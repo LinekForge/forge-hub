@@ -9,18 +9,16 @@
  * import 读写。
  */
 
-import fs from "node:fs";
-
 import type { PendingPermission } from "./types.js";
 import {
-  HUB_DIR,
   log,
   logError,
   appendAudit,
 } from "./config.js";
 import { getInstances } from "./instance-manager.js";
-import { loadChannelState, saveChannelState } from "./state.js";
+import { loadChannelState, readAllowlist, saveChannelState } from "./state.js";
 import { channelPlugins } from "./channel-registry.js";
+import { isAuthorizedSenderMatch } from "./message-auth.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -219,32 +217,35 @@ export function startPendingTtlSweep(): void {
 
 // ── Approval recipient + ownership ──────────────────────────────────────────
 
+export function matchesApprovalOwner(
+  channel: string,
+  senderId: string,
+  allowed: { id: string }[],
+): boolean {
+  const owner = allowed[0];
+  if (!owner?.id) return false;
+  return isAuthorizedSenderMatch(channel, senderId, owner.id);
+}
+
 /**
  * 解析审批消息的接收者——按通道读 allowlist 的第一个 allowed 条目。
  * 四个通道（wechat/telegram/imessage/feishu）allowlist 结构统一为 { allowed: [{ id, nickname }] }。
  * 区分"文件不存在（正常 disable）" vs "读取失败（配置损坏）"：后者 logError 让定位不绕弯。
  */
 export async function resolveApprovalRecipient(channel: string): Promise<string | null> {
-  const allowlistPath = `${HUB_DIR}/state/${channel}/allowlist.json`;
-  if (!fs.existsSync(allowlistPath)) {
-    log(`resolveApprovalRecipient(${channel}): allowlist 不存在 at ${allowlistPath}`);
+  const allowlistResult = readAllowlist(channel);
+  if (!allowlistResult.ok) {
+    const msg = `resolveApprovalRecipient(${channel}): ${allowlistResult.error}`;
+    if (allowlistResult.error.startsWith("allowlist not found:")) log(msg);
+    else logError(msg);
     return null;
   }
-  try {
-    const raw = fs.readFileSync(allowlistPath, "utf-8");
-    const data = JSON.parse(raw) as { allowed?: { id: string }[] };
-    const id = data.allowed?.[0]?.id;
-    if (!id) {
-      log(`resolveApprovalRecipient(${channel}): allowlist 里 allowed[0].id 为空`);
-      return null;
-    }
-    return id;
-  } catch (err) {
-    logError(
-      `resolveApprovalRecipient(${channel}) 读取 allowlist 失败: ${String(err)} (path=${allowlistPath})`,
-    );
+  const id = allowlistResult.allowlist.allowed[0]?.id;
+  if (!id) {
+    log(`resolveApprovalRecipient(${channel}): allowlist 里 allowed[0].id 为空`);
     return null;
   }
+  return id;
 }
 
 /**
@@ -262,16 +263,14 @@ export type OwnerCheckResult =
   | { ok: false; error: string };
 
 export function isApprovalOwner(channel: string, fromId: string): OwnerCheckResult {
-  const allowlistPath = `${HUB_DIR}/state/${channel}/allowlist.json`;
-  if (!fs.existsSync(allowlistPath)) {
-    return { ok: false, error: `allowlist not found: ${allowlistPath}` };
+  const allowlistResult = readAllowlist(channel);
+  if (!allowlistResult.ok) {
+    return { ok: false, error: allowlistResult.error };
   }
-  try {
-    const data = JSON.parse(fs.readFileSync(allowlistPath, "utf-8")) as { allowed?: { id: string }[] };
-    return { ok: true, isOwner: (data.allowed ?? []).some((e) => e.id === fromId) };
-  } catch (err) {
-    return { ok: false, error: `${String(err)} (path=${allowlistPath})` };
-  }
+  return {
+    ok: true,
+    isOwner: matchesApprovalOwner(channel, fromId, allowlistResult.allowlist.allowed),
+  };
 }
 
 // ── Approval ack ────────────────────────────────────────────────────────────

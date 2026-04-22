@@ -50,6 +50,7 @@ import {
   isApprovalOwner,
   sendApprovalAck,
 } from "./approval.js";
+import { getAuthSenderId, isAuthorizedSenderMatch } from "./message-auth.js";
 
 // ── Load Config ─────────────────────────────────────────────────────────────
 
@@ -79,6 +80,25 @@ function loadConfig(): HubConfig {
 
 import { isLockTrigger, triggerLock } from "./lock.js";
 
+type AllowlistGuardResult =
+  | { ok: true; isAllowed: boolean; authSenderId: string }
+  | { ok: false; error: string; authSenderId: string };
+
+function validateAuthorizedSender(msg: InboundMessage): AllowlistGuardResult {
+  const authSenderId = getAuthSenderId(msg);
+  const allowlistResult = readAllowlist(msg.channel);
+  if (!allowlistResult.ok) {
+    return { ok: false, error: allowlistResult.error, authSenderId };
+  }
+  return {
+    ok: true,
+    authSenderId,
+    isAllowed: allowlistResult.allowlist.allowed.some((entry) =>
+      isAuthorizedSenderMatch(msg.channel, authSenderId, entry.id),
+    ),
+  };
+}
+
 // 外壳：hub 内部的 route/filter/push 若 throw，不冒到调 pushMessage 的 channel 层。
 // channel 的 polling loop 一般有 try/catch 兜底，但 imessage setInterval / feishu readline
 // 是"事件回调"形态——同步 throw 会冒到 uncaughtException。这层包裹 = Hub 自身的 fail-safe。
@@ -101,26 +121,27 @@ function onMessageImpl(msg: InboundMessage): void {
     return;
   }
 
-  // ── 第二道防线：非主人消息进到 onMessage 意味着通道层第一道过滤失效 ─────────
-  // 本阶段 allowlist 只有用户，任何非主人消息进来都是异常事件（竞态/bug/regression）。
+  // ── 第二道防线：未授权消息进到 onMessage 意味着通道层第一道过滤失效 ─────────
+  // 这里校验"是否在 allowlist"，而不是"是否审批主人"。这样 approval authority
+  // 可以单独收紧到 allowed[0]，普通聊天仍保持 allowlist 语义。
   // 行为：logError 留痕 + push 一条抗 injection 的 system 告警让Forge 察觉 + 丢弃原消息不路由。
   // fromId = "system" 的消息（通道层自己 push 的告警）跳过此 check 避免递归/误伤。
   if (msg.fromId !== "system") {
-    const ownerCheck = isApprovalOwner(msg.channel, msg.fromId);
-    if (!ownerCheck.ok) {
+    const senderCheck = validateAuthorizedSender(msg);
+    if (!senderCheck.ok) {
       logError(
-        `第二道防线: allowlist 校验失败 (channel=${msg.channel}, fromId=${msg.fromId}): ${ownerCheck.error}. 消息丢弃.`,
+        `第二道防线: allowlist 校验失败 (channel=${msg.channel}, authSenderId=${senderCheck.authSenderId}): ${senderCheck.error}. 消息丢弃.`,
       );
       return;
     }
-    if (!ownerCheck.isOwner) {
+    if (!senderCheck.isAllowed) {
       logError(
-        `🚨 第二道防线触发：非主人消息进到 onMessage（第一道过滤失效！）` +
-          `channel=${msg.channel} fromId=${msg.fromId} from=${msg.from} ` +
+        `🚨 第二道防线触发：未授权消息进到 onMessage（第一道过滤失效！）` +
+          `channel=${msg.channel} authSenderId=${senderCheck.authSenderId} from=${msg.from} ` +
           `content=${JSON.stringify(msg.content.slice(0, 200))}`,
       );
       // Push 抗 injection 的 system 告警让Forge 察觉
-      const notice = formatUnauthorizedNotice(msg.channel, msg.from, msg.fromId, msg.content);
+      const notice = formatUnauthorizedNotice(msg.channel, msg.from, senderCheck.authSenderId, msg.content);
       const alertMsg: InboundMessage = {
         channel: msg.channel,
         from: "system",
@@ -129,7 +150,7 @@ function onMessageImpl(msg: InboundMessage): void {
         raw: {},
       };
       // 走普通路由把告警推给订阅了该通道的所有 instance（system 消息在下面的 system fromId 分支免疫此 check）
-      appendHistory(msg.channel, "in", "system", "[🚨 第二道防线: 非主人消息]");
+      appendHistory(msg.channel, "in", "system", "[🚨 第二道防线: 未授权消息]");
       recordInbound(msg.channel);
       if (!isLocked()) {
         const result = route(alertMsg, getInstances(), getCurrentConfig());
@@ -155,12 +176,13 @@ function onMessageImpl(msg: InboundMessage): void {
   // 没 pending 时，用户说什么（"yes 可以"、"no 算了"、"yes abcde"）都是纯聊天，正常路由。
   // 这避免了"用户凑巧说了一句 yes abcde 被 Hub 当作编号不存在报错"的 false positive。
   if (pendingPermissions.size > 0) {
+    const authSenderId = getAuthSenderId(msg);
     // Malformed 检测：格式像审批但严格不过（长度/含 l/等）——要主人身份才回 malformed ack
     if (
       LOOSE_PERMISSION_ID_RE.test(msg.content) &&
       !PERMISSION_ID_RE.test(msg.content)
     ) {
-      const ownerCheck = isApprovalOwner(msg.channel, msg.fromId);
+      const ownerCheck = isApprovalOwner(msg.channel, authSenderId);
       if (ownerCheck.ok && ownerCheck.isOwner) {
         const pendingList = [...pendingPermissions.values()]
           .map((p) => `• ${p.tool_name}: yes ${p.yes_id} / no ${p.no_id}`)
@@ -186,142 +208,142 @@ function onMessageImpl(msg: InboundMessage): void {
     // 严格匹配：`yes <yes_id>` / `no <no_id>`（强绑定：verdict word 和 id 必须一致）
     const permMatch = msg.content.match(PERMISSION_ID_RE);
     if (permMatch) {
-    const displayId = permMatch[2]!.toLowerCase();
-    const verdict: "allow" | "deny" = permMatch[1]!.toLowerCase().startsWith("y") ? "allow" : "deny";
+      const displayId = permMatch[2]!.toLowerCase();
+      const verdict: "allow" | "deny" = permMatch[1]!.toLowerCase().startsWith("y") ? "allow" : "deny";
 
-    // Anti-forgery: only accept replies from allowlisted owner of this channel.
-    // 区分三态：check 失败 → logError 后丢弃；真·非主人 → 普通 log 后丢弃。
-    const ownerCheck = isApprovalOwner(msg.channel, msg.fromId);
-    if (!ownerCheck.ok) {
-      logError(
-        `审批回复 id=${displayId} 无法校验主人身份 ` +
-          `(channel=${msg.channel}, fromId=${msg.fromId}): ${ownerCheck.error}`,
-      );
-      return;
-    }
-    if (!ownerCheck.isOwner) {
-      log(`⚠️  审批回复 id=${displayId} 来自非主人 ${msg.channel}:${msg.fromId}，忽略`);
-      return;
-    }
+      // Anti-forgery: only accept replies from allowlisted owner of this channel.
+      // 区分三态：check 失败 → logError 后丢弃；真·非主人 → 普通 log 后丢弃。
+      const ownerCheck = isApprovalOwner(msg.channel, authSenderId);
+      if (!ownerCheck.ok) {
+        logError(
+          `审批回复 id=${displayId} 无法校验主人身份 ` +
+            `(channel=${msg.channel}, authSenderId=${authSenderId}): ${ownerCheck.error}`,
+        );
+        return;
+      }
+      if (!ownerCheck.isOwner) {
+        log(`⚠️  审批回复 id=${displayId} 来自非主人 ${msg.channel}:${authSenderId}，忽略`);
+        return;
+      }
 
-    // idLookup 是权威入口：从 display id 查出内部 request_id + 期望的 verdict
-    const lookup = idLookup.get(displayId);
-    if (!lookup) {
-      // 收到主人的审批回复但 id 不在 lookup——TTL 过期 / Hub 重启丢了 pending / id 从未发出
-      logError(
-        `审批回复 id=${displayId} 无对应登记 (TTL 过期/Hub 重启/id 从未发出): ` +
-          `msg from ${msg.channel}:${msg.from} (${msg.fromId})`,
-      );
-      appendHistory(msg.channel, "in", msg.from, `[审批回复 id=${displayId} 无效]`);
-      recordInbound(msg.channel);
-      // 回 ack 让用户立即知道这个 id 失效——包括 Hub 重启后的场景
-      // 用户看到"没找到"，就知道要去终端按 Esc 救会话，不用等半小时才察觉卡死
-      void sendApprovalAck(
-        msg.channel,
-        msg.fromId,
-        `⚠️ 没有找到编号 ${displayId} 的审批——可能已超时、Hub 重启、或编号输错。\n` +
-          `如果会话还在等，去那个终端按 Esc 取消当前 tool call。`,
-      );
-      return;
-    }
-
-    // 强绑定校验：verdict word 必须匹配 id 的语义
-    // 用户手滑："yes {no_id}" → lookup.behavior=deny 但 verdict=allow → 不一致 → 丢弃 + 回 ack 提示
-    if (lookup.behavior !== verdict) {
-      const requestId = lookup.request_id;
-      const mismatchPending = pendingPermissions.get(requestId);
-      logError(
-        `审批回复 verdict/id 不一致（手滑或 autocorrect）: ` +
-          `word=${verdict} 但 id=${displayId} 绑定的是 ${lookup.behavior}。` +
-          `请主人重新用正确的 id 回复（pending 保持等待）。`,
-      );
-      appendAudit({
-        action: "approval_mismatch",
-        request_id: lookup.request_id,
-        display_id: displayId,
-        verdict_word: verdict,
-        expected_behavior: lookup.behavior,
-        reply_channel: msg.channel,
-        reply_from: msg.from,
-      });
-      appendHistory(msg.channel, "in", msg.from, `[审批回复 id=${displayId} verdict 不一致]`);
-      recordInbound(msg.channel);
-      // 回 ack 让用户知道他打错了 + 正确的 id 是什么（pending 如果还在就能报全）
-      if (mismatchPending) {
-        const correctWord = lookup.behavior === "allow" ? "yes" : "no";
+      // idLookup 是权威入口：从 display id 查出内部 request_id + 期望的 verdict
+      const lookup = idLookup.get(displayId);
+      if (!lookup) {
+        // 收到主人的审批回复但 id 不在 lookup——TTL 过期 / Hub 重启丢了 pending / id 从未发出
+        logError(
+          `审批回复 id=${displayId} 无对应登记 (TTL 过期/Hub 重启/id 从未发出): ` +
+            `msg from ${msg.channel}:${msg.from} (${msg.fromId})`,
+        );
+        appendHistory(msg.channel, "in", msg.from, `[审批回复 id=${displayId} 无效]`);
+        recordInbound(msg.channel);
+        // 回 ack 让用户立即知道这个 id 失效——包括 Hub 重启后的场景
+        // 用户看到"没找到"，就知道要去终端按 Esc 救会话，不用等半小时才察觉卡死
         void sendApprovalAck(
           msg.channel,
           msg.fromId,
-          `⚠️ 审批字词和 id 不一致\n` +
-            `你发的："${verdict === "allow" ? "yes" : "no"} ${displayId}"\n` +
-            `但 ${displayId} 绑定的是"${correctWord}"\n\n` +
-            `正确回复：\n回复 yes ${mismatchPending.yes_id} 批准\n回复 no ${mismatchPending.no_id} 拒绝`,
+          `⚠️ 没有找到编号 ${displayId} 的审批——可能已超时、Hub 重启、或编号输错。\n` +
+            `如果会话还在等，去那个终端按 Esc 取消当前 tool call。`,
         );
+        return;
       }
-      return;
-    }
 
-    const requestId = lookup.request_id;
-    const pending = pendingPermissions.get(requestId);
-    if (!pending) {
-      // idLookup 有但 pending 没了——是 bug（两个 map 不同步）。同时清理 orphan idLookup。
-      logError(
-        `内部不一致：idLookup[${displayId}]→${requestId} 但 pending 不存在，清理 orphan`,
-      );
-      idLookup.delete(displayId);
+      // 强绑定校验：verdict word 必须匹配 id 的语义
+      // 用户手滑："yes {no_id}" → lookup.behavior=deny 但 verdict=allow → 不一致 → 丢弃 + 回 ack 提示
+      if (lookup.behavior !== verdict) {
+        const requestId = lookup.request_id;
+        const mismatchPending = pendingPermissions.get(requestId);
+        logError(
+          `审批回复 verdict/id 不一致（手滑或 autocorrect）: ` +
+            `word=${verdict} 但 id=${displayId} 绑定的是 ${lookup.behavior}。` +
+            `请主人重新用正确的 id 回复（pending 保持等待）。`,
+        );
+        appendAudit({
+          action: "approval_mismatch",
+          request_id: lookup.request_id,
+          display_id: displayId,
+          verdict_word: verdict,
+          expected_behavior: lookup.behavior,
+          reply_channel: msg.channel,
+          reply_from: msg.from,
+        });
+        appendHistory(msg.channel, "in", msg.from, `[审批回复 id=${displayId} verdict 不一致]`);
+        recordInbound(msg.channel);
+        // 回 ack 让用户知道他打错了 + 正确的 id 是什么（pending 如果还在就能报全）
+        if (mismatchPending) {
+          const correctWord = lookup.behavior === "allow" ? "yes" : "no";
+          void sendApprovalAck(
+            msg.channel,
+            msg.fromId,
+            `⚠️ 审批字词和 id 不一致\n` +
+              `你发的："${verdict === "allow" ? "yes" : "no"} ${displayId}"\n` +
+              `但 ${displayId} 绑定的是"${correctWord}"\n\n` +
+              `正确回复：\n回复 yes ${mismatchPending.yes_id} 批准\n回复 no ${mismatchPending.no_id} 拒绝`,
+          );
+        }
+        return;
+      }
+
+      const requestId = lookup.request_id;
+      const pending = pendingPermissions.get(requestId);
+      if (!pending) {
+        // idLookup 有但 pending 没了——是 bug（两个 map 不同步）。同时清理 orphan idLookup。
+        logError(
+          `内部不一致：idLookup[${displayId}]→${requestId} 但 pending 不存在，清理 orphan`,
+        );
+        idLookup.delete(displayId);
+        savePendingToDisk();
+        return;
+      }
+
+      // 清理：pending map + 两条 idLookup（yes_id 和 no_id）
+      pendingPermissions.delete(requestId);
+      idLookup.delete(pending.yes_id);
+      idLookup.delete(pending.no_id);
       savePendingToDisk();
-      return;
-    }
+      appendHistory(msg.channel, "in", msg.from, `[审批 ${requestId}] ${verdict}`);
+      recordInbound(msg.channel);
 
-    // 清理：pending map + 两条 idLookup（yes_id 和 no_id）
-    pendingPermissions.delete(requestId);
-    idLookup.delete(pending.yes_id);
-    idLookup.delete(pending.no_id);
-    savePendingToDisk();
-    appendHistory(msg.channel, "in", msg.from, `[审批 ${requestId}] ${verdict}`);
-    recordInbound(msg.channel);
-
-    const instance = getInstances().get(pending.from_instance);
-    // 审计不依赖 instance 是否在线——用户的决策已下达就要审计
-    appendAudit({
-      action: verdict === "allow" ? "approval_granted" : "approval_denied",
-      request_id: requestId,
-      display_id: displayId,
-      tool_name: pending.tool_name,
-      description: pending.description,
-      from_instance: pending.from_instance,
-      instance_online: Boolean(instance),
-      reply_channel: msg.channel,
-      reply_from: msg.from,
-      waited_seconds: Math.round((Date.now() - pending.created_at) / 1000),
-    });
-    if (!instance) {
-      log(`⚠️  审批 ${requestId} 的发起实例 ${pending.from_instance} 已离线，丢弃回复（已审计）`);
+      const instance = getInstances().get(pending.from_instance);
+      // 审计不依赖 instance 是否在线——用户的决策已下达就要审计
+      appendAudit({
+        action: verdict === "allow" ? "approval_granted" : "approval_denied",
+        request_id: requestId,
+        display_id: displayId,
+        tool_name: pending.tool_name,
+        description: pending.description,
+        from_instance: pending.from_instance,
+        instance_online: Boolean(instance),
+        reply_channel: msg.channel,
+        reply_from: msg.from,
+        waited_seconds: Math.round((Date.now() - pending.created_at) / 1000),
+      });
+      if (!instance) {
+        log(`⚠️  审批 ${requestId} 的发起实例 ${pending.from_instance} 已离线，丢弃回复（已审计）`);
+        void sendApprovalAck(
+          msg.channel,
+          msg.fromId,
+          `⚠️ ${verdict === "allow" ? "批准" : "拒绝"}已记录，但 ${pending.tool_name} 所在会话已离线，无法送达`,
+        );
+        return;
+      }
+      instance.send({
+        type: "permission_response",
+        channel: msg.channel,
+        from: msg.from,
+        fromId: msg.fromId,
+        content: JSON.stringify({ request_id: requestId, behavior: verdict }),
+        targeted: true,
+        raw: {},
+      });
+      log(`✅ 审批 ${requestId} → ${verdict} via id=${displayId} (from ${msg.channel}:${msg.from} → ${pending.from_instance})`);
+      // 成功 ack：用户能看到"Hub 确认已生效"，而不是盲信
+      const verb = verdict === "allow" ? "✅ 已批准" : "❌ 已拒绝";
       void sendApprovalAck(
         msg.channel,
         msg.fromId,
-        `⚠️ ${verdict === "allow" ? "批准" : "拒绝"}已记录，但 ${pending.tool_name} 所在会话已离线，无法送达`,
+        `${verb} ${pending.tool_name}\n(${pending.description})`,
       );
       return;
-    }
-    instance.send({
-      type: "permission_response",
-      channel: msg.channel,
-      from: msg.from,
-      fromId: msg.fromId,
-      content: JSON.stringify({ request_id: requestId, behavior: verdict }),
-      targeted: true,
-      raw: {},
-    });
-    log(`✅ 审批 ${requestId} → ${verdict} via id=${displayId} (from ${msg.channel}:${msg.from} → ${pending.from_instance})`);
-    // 成功 ack：用户能看到"Hub 确认已生效"，而不是盲信
-    const verb = verdict === "allow" ? "✅ 已批准" : "❌ 已拒绝";
-    void sendApprovalAck(
-      msg.channel,
-      msg.fromId,
-      `${verb} ${pending.tool_name}\n(${pending.description})`,
-    );
-    return;
     }
   }
 
@@ -372,7 +394,7 @@ import { filterBySubscription } from "./resolve.js";
 import { startServer } from "./endpoints.js";
 import { setCurrentConfig, getCurrentConfig } from "./hub-state.js";
 import { startChannelWatchdog } from "./channel-watchdog.js";
-import { loadAllowlist } from "./state.js";
+import { loadAllowlist, readAllowlist } from "./state.js";
 
 // ── Main ────────────────────────────────────────────────────────────────────
 

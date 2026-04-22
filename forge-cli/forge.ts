@@ -6,11 +6,21 @@
  *
  * Usage:
  *   fh hub status|peers|channels|send|summary
+ *   fh engine list|remove|pause|log
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
+import {
+  buildEngineLogEntry,
+  findEngineRemoveMatches,
+  formatLocalTimestamp,
+  getEnginePaths,
+  listEngineSchedules,
+  updateEnginePauseConfig,
+} from "./engine.js";
+import { resolveSelfTestHarnessPath } from "./self-test.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -239,17 +249,18 @@ async function hubSelfTest() {
   // self-test 走**独立 test harness binary**——不碰生产 Hub。
   // harness 内部 spawn 一个临时 Hub（不同 port + tmp HUB_DIR），跑 scenarios，清理。
   // 生产 Hub 代码里完全没有 /test/* endpoint——见 hub-test-harness/harness.ts 顶部注释。
-
-  // Opensource: require FORGE_HUB_REPO env (users clone to their own path).
-  // Fallback to cwd so running from repo root also works.
-  const harnessPath = path.resolve(
-    process.env.FORGE_HUB_REPO ?? process.cwd(),
-    "forge-hub/hub-test-harness/harness.ts",
-  );
+  const resolution = resolveSelfTestHarnessPath({
+    repoRootOverride: process.env.FORGE_HUB_REPO,
+  });
+  const harnessPath = resolution.path;
 
   if (!fs.existsSync(harnessPath)) {
     console.error(`❌ test harness 未找到: ${harnessPath}`);
-    console.error("   如果仓库路径不同，设 FORGE_HUB_REPO 环境变量");
+    console.error("   已尝试:");
+    for (const candidate of resolution.tried) {
+      console.error(`   - ${candidate}`);
+    }
+    console.error("   如果仓库不在这些位置，可设 FORGE_HUB_REPO=/你的/forge-hub/仓库根目录");
     process.exit(1);
   }
 
@@ -802,6 +813,119 @@ function hubPresetRemove(args: string[]) {
 // NOTE: 定时任务调度不属于 Hub 能力范畴。如需类似功能请用 system cron / launchd
 // / 自己写 plugin。forge-hub 专注消息通道 + 远程审批。
 
+// ── Engine Commands ────────────────────────────────────────────────────────
+
+function engineList() {
+  const { engineScheduleDir } = getEnginePaths();
+  if (!fs.existsSync(engineScheduleDir)) {
+    console.log("engine.d/ 不存在");
+    return;
+  }
+
+  const lines = listEngineSchedules(engineScheduleDir);
+  if (lines.length === 0) {
+    console.log("没有定时任务");
+    return;
+  }
+
+  for (const item of lines) console.log(item.line);
+}
+
+function engineRemove(args: string[]) {
+  if (args.length === 0) {
+    die("用法: fh engine remove <query|filename>");
+  }
+
+  const { engineScheduleDir } = getEnginePaths();
+  if (!fs.existsSync(engineScheduleDir)) {
+    console.log("engine.d/ 不存在");
+    return;
+  }
+
+  const query = args.join(" ");
+  const exactPath = path.join(engineScheduleDir, query);
+  if (fs.existsSync(exactPath)) {
+    fs.unlinkSync(exactPath);
+    console.log(`已删除: ${query}`);
+    return;
+  }
+
+  const matches = findEngineRemoveMatches(engineScheduleDir, query);
+  if (matches.length === 0) {
+    console.log(`没有找到包含"${query}"的任务`);
+    return;
+  }
+  if (matches.length === 1) {
+    fs.unlinkSync(path.join(engineScheduleDir, matches[0].file));
+    console.log(`已删除: ${matches[0].file} @ ${matches[0].time} — ${matches[0].prompt}`);
+    return;
+  }
+
+  console.log(`匹配到 ${matches.length} 个任务，请指定文件名:`);
+  for (const match of matches) {
+    console.log(`  ${match.file} @ ${match.time} — ${match.prompt}`);
+  }
+}
+
+function enginePause(args: string[]) {
+  const minutes = parseInt(args[0] ?? "30", 10);
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    die("用法: fh engine pause [minutes>=0]");
+  }
+
+  const { engineDir, engineConfigFile } = getEnginePaths();
+  fs.mkdirSync(engineDir, { recursive: true });
+
+  try {
+    const current = fs.existsSync(engineConfigFile)
+      ? JSON.parse(fs.readFileSync(engineConfigFile, "utf-8")) as Record<string, unknown>
+      : {};
+    const next = updateEnginePauseConfig(current, minutes);
+    fs.writeFileSync(engineConfigFile, JSON.stringify(next, null, 2), "utf-8");
+    if (minutes <= 0) {
+      console.log("Engine 已恢复");
+      return;
+    }
+    const pauseUntil = String(next.pause_until);
+    console.log(`Engine 已暂停 ${minutes} 分钟（到 ${formatLocalTimestamp(pauseUntil)}）`);
+    console.log("Engine 会自动恢复。手动恢复：fh engine pause 0");
+  } catch (err) {
+    die(`暂停失败: ${String(err)}`);
+  }
+}
+
+function engineLog(args: string[]) {
+  const { engineDir, engineLogFile } = getEnginePaths();
+  fs.mkdirSync(engineDir, { recursive: true });
+
+  if (args[0] === "--read") {
+    const n = parseInt(args[1] ?? "20", 10);
+    try {
+      if (!fs.existsSync(engineLogFile)) {
+        console.log("行动日志为空");
+        return;
+      }
+      const lines = fs.readFileSync(engineLogFile, "utf-8").trim().split("\n").filter(Boolean);
+      console.log(lines.slice(-n).join("\n"));
+    } catch (err) {
+      die(`读取日志失败: ${String(err)}`);
+    }
+    return;
+  }
+
+  if (args.length === 0) {
+    die("用法: fh engine log <text> 或 fh engine log --read [n]");
+  }
+
+  const text = args.join(" ");
+  try {
+    fs.appendFileSync(engineLogFile, buildEngineLogEntry(text), "utf-8");
+    console.log(`已写入行动日志: ${text.slice(0, 60)}`);
+  } catch (err) {
+    die(`写入日志失败: ${String(err)}`);
+  }
+}
+
 // ── Setup Wizard ─────────────────────────────────────────────────────────────
 
 async function hubSetup(): Promise<void> {
@@ -888,7 +1012,13 @@ if (!domain) {
   fh hub allowlist [ch]          查看授权列表
   fh hub preset list             查看通道预设
   fh hub preset add <n> <ch:N>   添加预设（如 wx:200 tg:50）
-  fh hub preset remove <n>       删除预设`);
+  fh hub preset remove <n>       删除预设
+
+  fh engine list                 查看定时任务
+  fh engine remove <q|file>      删除定时任务
+  fh engine pause [minutes]      暂停 engine（0 = 立即恢复）
+  fh engine log <text>           记一条手动行动日志
+  fh engine log --read [n]       查看最近 n 条行动日志`);
   process.exit(0);
 }
 
@@ -927,6 +1057,14 @@ if (domain === "hub") {
       break;
     }
     default: die(`未知命令: fh hub${command ?? ""}\n运行 forge 查看帮助`);
+  }
+} else if (domain === "engine") {
+  switch (command) {
+    case "list": engineList(); break;
+    case "remove": engineRemove(rest); break;
+    case "pause": enginePause(rest); break;
+    case "log": engineLog(rest); break;
+    default: die(`未知命令: fh engine ${command ?? ""}\n运行 forge 查看帮助`);
   }
 } else {
   die(`未知域: ${domain}\n运行 forge 查看帮助`);

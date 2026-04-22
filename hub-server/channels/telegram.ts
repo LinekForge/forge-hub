@@ -5,6 +5,7 @@
  * 长轮询 + 看门狗 + 指数退避 + 错误分类。
  */
 
+import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import fsMod from "node:fs";
 import pathMod from "node:path";
@@ -346,7 +347,7 @@ const plugin: ChannelPlugin = {
     botToken = config?.bot_token ?? "";
     if (!botToken) {
       hub.logError("未找到 Telegram bot token。请编辑 ~/.forge-hub/state/telegram/config.json");
-      return;
+      throw new ChannelStartSkipError("未配置 Telegram bot token");
     }
 
     try {
