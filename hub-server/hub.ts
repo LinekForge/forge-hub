@@ -30,6 +30,7 @@ import {
 import { loadChannels, stopAllChannels } from "./channel-loader.js";
 import { setOnReadyCallback, getInstances, pushToInstances } from "./instance-manager.js";
 import { route } from "./router.js";
+import { drainQueuedWrites } from "./write-queue.js";
 
 // ── Pending 持久化 ──────────────────────────────────────────────────────────
 //
@@ -388,7 +389,7 @@ function onMessageImpl(msg: InboundMessage): void {
 // Registry 抽到 channel-registry.ts——main() 用 populate() 填充，其他模块共享
 // 同一 Map 引用。
 
-import { appendHistory } from "./history.js";
+import { appendHistory, readRecentHistory } from "./history.js";
 import { channelPlugins, channelPluginsMeta, populate as populateRegistry } from "./channel-registry.js";
 import { filterBySubscription } from "./resolve.js";
 import { startServer } from "./endpoints.js";
@@ -482,51 +483,50 @@ async function main() {
 
   // Register onReady callback: push history + context when client sends "ready"
   setOnReadyCallback((instanceId, historyConfig) => {
-    const instance = getInstances().get(instanceId);
-    if (!instance) return;
+    void (async () => {
+      const instance = getInstances().get(instanceId);
+      if (!instance) return;
 
-    // 全局开关：auto_replay_on_ready=false 时不推自动历史，pull-model（instance 用 hub_replay_history 工具自己拉）
-    // default true 保持兼容。想开"纯净测试窗口"就在 hub-config.json 里设 false。
-    const autoReplay = getCurrentConfig().auto_replay_on_ready !== false;
-    // 每通道条数上限——default 10 轻量化（之前硬编码 100 对 CC context 太重）
-    const replayCount = getCurrentConfig().auto_replay_count ?? 10;
+      // 全局开关：auto_replay_on_ready=false 时不推自动历史，pull-model（instance 用 hub_replay_history 工具自己拉）
+      // default true 保持兼容。想开"纯净测试窗口"就在 hub-config.json 里设 false。
+      const autoReplay = getCurrentConfig().auto_replay_on_ready !== false;
+      // 每通道条数上限——default 10 轻量化（之前硬编码 100 对 CC context 太重）
+      const replayCount = getCurrentConfig().auto_replay_count ?? 10;
 
-    // Determine which channels to replay history for
-    // If historyConfig present: use it (keys = channels to replay, values = counts)
-    // If absent: fall back to subscribed channels, config.auto_replay_count each
-    const historyChannels: Record<string, number> = autoReplay
-      ? (historyConfig ?? Object.fromEntries((instance.channels ?? [...channelPlugins.keys()]).map(ch => [ch, replayCount])))
-      : {};  // auto_replay 关闭 → 空对象 → 下面循环跑 0 次
+      // Determine which channels to replay history for
+      // If historyConfig present: use it (keys = channels to replay, values = counts)
+      // If absent: fall back to subscribed channels, config.auto_replay_count each
+      const historyChannels: Record<string, number> = autoReplay
+        ? (historyConfig ?? Object.fromEntries((instance.channels ?? [...channelPlugins.keys()]).map(ch => [ch, replayCount])))
+        : {};  // auto_replay 关闭 → 空对象 → 下面循环跑 0 次
 
-    // Send history per channel
-    let totalReplayed = 0;
-    for (const [ch, limit] of Object.entries(historyChannels)) {
-      if (limit <= 0) continue;
-      try {
-        const historyFile = `${HUB_DIR}/state/${ch}/chat-history.jsonl`;
-        if (!fs.existsSync(historyFile)) continue;
-        const lines = fs.readFileSync(historyFile, "utf-8").trim().split("\n").filter(Boolean);
-        const entries = lines.slice(-limit).map((line) => {
-          try { return JSON.parse(line); } catch { return null; }
-        }).filter(Boolean);
-        if (entries.length > 0) {
-          instance.ws.send(JSON.stringify({ type: "history", channel: ch, entries }));
-          totalReplayed += entries.length;
-        }
-      } catch (err) { log(`⚠ 回放 ${ch} 历史失败: ${String(err)}`); }
-    }
+      // Send history per channel
+      let totalReplayed = 0;
+      for (const [ch, limit] of Object.entries(historyChannels)) {
+        if (limit <= 0) continue;
+        try {
+          const entries = await readRecentHistory(ch, limit);
+          if (entries.length > 0) {
+            instance.ws.send(JSON.stringify({ type: "history", channel: ch, entries }));
+            totalReplayed += entries.length;
+          }
+        } catch (err) { log(`⚠ 回放 ${ch} 历史失败: ${String(err)}`); }
+      }
 
-    // Send context with full channel metadata
-    const channelMeta = [...channelPluginsMeta.values()].map(p => ({
-      id: p.name, name: p.displayName, aliases: p.aliases,
-    }));
-    instance.ws.send(JSON.stringify({
-      type: "context",
-      peers: getInstances().size,
-      channels: channelMeta,
-    }));
+      // Send context with full channel metadata
+      const channelMeta = [...channelPluginsMeta.values()].map(p => ({
+        id: p.name, name: p.displayName, aliases: p.aliases,
+      }));
+      instance.ws.send(JSON.stringify({
+        type: "context",
+        peers: getInstances().size,
+        channels: channelMeta,
+      }));
 
-    log(`📜 已推送历史 ${totalReplayed} 条 + 上下文给 ${instanceId}`);
+      log(`📜 已推送历史 ${totalReplayed} 条 + 上下文给 ${instanceId}`);
+    })().catch((err) => {
+      logError(`ready history/context 推送失败 (${instanceId}): ${String(err)}`);
+    });
   });
 
   log(`Forge Hub 已启动 ✦ (${channelPlugins.size} 个通道)${isLocked() ? " 🔒 已锁定" : ""}`);
@@ -543,6 +543,7 @@ async function main() {
     log("────────────────────────────────────────");
     await stopAllChannels();
     removePid();
+    await drainQueuedWrites();
     process.exit(0);
   }
   process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -562,7 +563,8 @@ async function main() {
   });
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   logError(`Fatal: ${String(err)}`);
+  await drainQueuedWrites();
   process.exit(1);
 });

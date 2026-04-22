@@ -5,6 +5,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { enqueueAppend } from "./write-queue.js";
 
 // ── Binary Resolvers（共享 util）─────────────────────────────────────────────
 
@@ -17,12 +18,16 @@ import { execFileSync } from "node:child_process";
  */
 export function resolveFfmpeg(): string | null {
   if (process.env.FORGE_FFMPEG_PATH) return process.env.FORGE_FFMPEG_PATH;
+  if (cachedFfmpeg !== undefined) return cachedFfmpeg;
   try {
-    return execFileSync("/usr/bin/which", ["ffmpeg"], { encoding: "utf-8" }).trim() || null;
+    cachedFfmpeg = execFileSync("/usr/bin/which", ["ffmpeg"], { encoding: "utf-8" }).trim() || null;
   } catch {
-    return null;
+    cachedFfmpeg = null;
   }
+  return cachedFfmpeg;
 }
+
+let cachedFfmpeg: string | null | undefined;
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
@@ -110,20 +115,35 @@ export function readAuthToken(): string {
 
 const LOG_MAX_SIZE = 1024 * 1024; // 1MB
 const LOG_KEEP = 3;               // keep hub.log.1, .2, .3
+let knownLogSize: number | null = null;
 
-function rotateIfNeeded(): void {
+async function getKnownLogSize(): Promise<number> {
+  if (knownLogSize != null) return knownLogSize;
   try {
-    const stat = fs.statSync(LOG_FILE);
-    if (stat.size < LOG_MAX_SIZE) return;
-    // Rotate: .3 → delete, .2 → .3, .1 → .2, current → .1
+    knownLogSize = (await fs.promises.stat(LOG_FILE)).size;
+  } catch {
+    knownLogSize = 0;
+  }
+  return knownLogSize;
+}
+
+async function rotateIfNeeded(incomingBytes: number): Promise<void> {
+  const currentSize = await getKnownLogSize();
+  if (currentSize + incomingBytes < LOG_MAX_SIZE) return;
+  try {
     for (let i = LOG_KEEP; i >= 1; i--) {
       const from = i === 1 ? LOG_FILE : `${LOG_FILE}.${i - 1}`;
       const to = `${LOG_FILE}.${i}`;
-      if (fs.existsSync(from)) {
-        if (i === LOG_KEEP && fs.existsSync(to)) fs.unlinkSync(to);
-        fs.renameSync(from, to);
+      if (i === LOG_KEEP) {
+        await fs.promises.rm(to, { force: true });
+      }
+      try {
+        await fs.promises.rename(from, to);
+      } catch (err) {
+        if (!String(err).includes("ENOENT")) throw err;
       }
     }
+    knownLogSize = 0;
   } catch {}
 }
 
@@ -356,10 +376,10 @@ function timestamp(): string {
 
 function writeLine(line: string): void {
   process.stderr.write(line);
-  try {
-    rotateIfNeeded();
-    fs.appendFileSync(LOG_FILE, line, "utf-8");
-  } catch {}
+  enqueueAppend(LOG_FILE, line, {
+    beforeAppend: async (content) => rotateIfNeeded(Buffer.byteLength(content)),
+    afterAppend: (bytes) => { knownLogSize = (knownLogSize ?? 0) + bytes; },
+  });
 }
 
 export function log(msg: string): void {
@@ -386,12 +406,13 @@ export function channelLogError(channel: string, msg: string): void {
  * 不 throw——审计失败不应该阻塞主流程。但会 logError 留痕，方便排查"audit 为什么漏了"。
  */
 export function appendAudit(entry: Record<string, unknown>): void {
-  try {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
-    fs.appendFileSync(AUDIT_FILE, line + "\n", "utf-8");
-  } catch (err) {
-    logError(`appendAudit 失败 (entry=${JSON.stringify(entry).slice(0, 100)}): ${String(err)}`);
-  }
+  const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+  enqueueAppend(AUDIT_FILE, line + "\n", {
+    fileMode: 0o600,
+    onError: (err) => {
+      logError(`appendAudit 失败 (entry=${JSON.stringify(entry).slice(0, 100)}): ${String(err)}`);
+    },
+  });
 }
 
 // ── Security: 未授权消息告警文案 ─────────────────────────────────────────────

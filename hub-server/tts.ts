@@ -22,13 +22,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 import { logError, resolveFfmpeg } from "./config.js";
+import { execFileText } from "./process-utils.js";
 
 const TTS_HOOK = process.env.FORGE_HUB_TTS_HOOK ?? "";
 
-export function synthesizeToOgg(text: string): string | null {
+export async function synthesizeToOgg(text: string): Promise<string | null> {
   if (!TTS_HOOK) {
     logError("TTS 未配置：设置 FORGE_HUB_TTS_HOOK env var 指向你的 TTS 脚本（协议见 tts.ts 顶部注释）");
     return null;
@@ -46,8 +46,8 @@ export function synthesizeToOgg(text: string): string | null {
   // 无法预猜也无法预埋 symlink。返回 ogg 后调用方清理父目录。
   let tmpDir: string;
   try {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "hub-tts-"));
-    fs.chmodSync(tmpDir, 0o700);
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "hub-tts-"));
+    await fs.promises.chmod(tmpDir, 0o700);
   } catch (err) {
     logError(`TTS 临时目录创建失败: ${String(err)}`);
     return null;
@@ -56,25 +56,29 @@ export function synthesizeToOgg(text: string): string | null {
   const ogg = path.join(tmpDir, "v.ogg");
 
   try {
-    execFileSync("/bin/bash", [TTS_HOOK, text, mp3], { timeout: 15000, encoding: "utf-8" });
-    if (!fs.existsSync(mp3)) {
+    await execFileText("/bin/bash", [TTS_HOOK, text, mp3], { timeout: 15000 });
+    try {
+      await fs.promises.access(mp3, fs.constants.F_OK);
+    } catch {
       logError(`TTS hook 返回成功但 mp3 文件未生成: ${TTS_HOOK}`);
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
       return null;
     }
-    execFileSync(ffmpeg, ["-y", "-i", mp3, "-c:a", "libopus", "-b:a", "64k", ogg], { timeout: 10000 });
-    try { fs.unlinkSync(mp3); } catch {}
-    if (!fs.existsSync(ogg)) {
+    await execFileText(ffmpeg, ["-y", "-i", mp3, "-c:a", "libopus", "-b:a", "64k", ogg], { timeout: 10000 });
+    try { await fs.promises.unlink(mp3); } catch {}
+    try {
+      await fs.promises.access(ogg, fs.constants.F_OK);
+    } catch {
       // ffmpeg exit 0 但 ogg 文件未生成（罕见；codec 错误 / 磁盘满 / 权限等）。
       // 不打 log 的话上游只看到"TTS 合成失败"泛指——debug 无 evidence。
       logError(`ffmpeg 退出成功但 ogg 未生成: ffmpeg=${ffmpeg}, mp3=${mp3}, ogg=${ogg}`);
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
       return null;
     }
     return ogg;
   } catch (err) {
     logError(`TTS 合成失败 (hook=${TTS_HOOK}, ffmpeg=${ffmpeg}): ${String(err)}`);
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
     return null;
   }
 }

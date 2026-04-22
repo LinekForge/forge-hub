@@ -103,9 +103,9 @@ async function downloadTgFile(fileId: string, fileName: string): Promise<string 
     const url = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
     const res = await fetch(url, (PROXY_URL ? { proxy: PROXY_URL } : {}) as any);
     if (!res.ok) return null;
-    fsMod.mkdirSync(TG_MEDIA_DIR, { recursive: true });
+    await fsMod.promises.mkdir(TG_MEDIA_DIR, { recursive: true });
     const filePath = pathMod.join(TG_MEDIA_DIR, fileName);
-    fsMod.writeFileSync(filePath, Buffer.from(await res.arrayBuffer()));
+    await fsMod.promises.writeFile(filePath, Buffer.from(await res.arrayBuffer()));
     hub.log(`📎 下载: ${fileName}`);
     return filePath;
   } catch (err) {
@@ -375,9 +375,10 @@ const plugin: ChannelPlugin = {
         if (filePath.startsWith("http")) {
           await tgApi("sendDocument", { chat_id: to, document: filePath, caption: content || undefined });
         } else {
+          const fileBuffer = await fsMod.promises.readFile(filePath);
           const form = new FormData();
           form.append("chat_id", to);
-          form.append("document", new Blob([fsMod.readFileSync(filePath)]), filePath.split("/").pop());
+          form.append("document", new Blob([fileBuffer]), filePath.split("/").pop());
           if (content) form.append("caption", content);
           const docOpts: Record<string, unknown> = { method: "POST", body: form };
           if (PROXY_URL) docOpts.proxy = PROXY_URL;
@@ -390,9 +391,10 @@ const plugin: ChannelPlugin = {
       }
 
       if (type === "voice" && filePath) {
+        const voiceBuffer = await fsMod.promises.readFile(filePath);
         const form = new FormData();
         form.append("chat_id", to);
-        form.append("voice", new Blob([fsMod.readFileSync(filePath)]), "voice.ogg");
+        form.append("voice", new Blob([voiceBuffer]), "voice.ogg");
         const voiceOpts: Record<string, unknown> = { method: "POST", body: form };
         if (PROXY_URL) voiceOpts.proxy = PROXY_URL;
         const res = await fetch(`https://api.telegram.org/bot${botToken}/sendVoice`, voiceOpts as any);

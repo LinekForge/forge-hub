@@ -6,10 +6,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 import { apiFetch, generateClientId } from "./wechat-ilink.js";
 import { MSG_TYPE_BOT, MSG_STATE_FINISH } from "./wechat-types.js";
+import { execFileText } from "../process-utils.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -113,7 +113,7 @@ export interface DownloadedMedia {
 export async function downloadMediaItem(item: MessageItem, mediaDir: string): Promise<DownloadedMedia | null> {
   try {
     const ts = Date.now();
-    fs.mkdirSync(mediaDir, { recursive: true });
+    await fs.promises.mkdir(mediaDir, { recursive: true });
 
     // Image
     if (item.type === 2 && item.image_item) {
@@ -126,7 +126,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const ext = detectImageExt(decrypted);
       const fileName = `img_${ts}.${ext}`;
       const filePath = path.join(mediaDir, fileName);
-      fs.writeFileSync(filePath, decrypted);
+      await fs.promises.writeFile(filePath, decrypted);
       return { type: "image", filePath, fileName };
     }
 
@@ -140,7 +140,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const origName = item.file_item.file_name || `file_${ts}`;
       const fileName = `${ts}_${origName}`;
       const filePath = path.join(mediaDir, fileName);
-      fs.writeFileSync(filePath, decrypted);
+      await fs.promises.writeFile(filePath, decrypted);
       return { type: "file", filePath, fileName: origName };
     }
 
@@ -153,7 +153,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
       const fileName = `video_${ts}.mp4`;
       const filePath = path.join(mediaDir, fileName);
-      fs.writeFileSync(filePath, decrypted);
+      await fs.promises.writeFile(filePath, decrypted);
       return { type: "video", filePath, fileName };
     }
 
@@ -166,7 +166,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
       const fileName = `voice_${ts}.silk`;
       const filePath = path.join(mediaDir, fileName);
-      fs.writeFileSync(filePath, decrypted);
+      await fs.promises.writeFile(filePath, decrypted);
       return { type: "voice", filePath, fileName };
     }
   } catch (err) {
@@ -218,14 +218,16 @@ export async function uploadAndSendMedia(
     const ext = ctExt || (urlExt && urlExt !== "" ? urlExt : ".bin");
     localPath = path.join(mediaDir, `dl_${Date.now()}${ext}`);
     const buf = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(localPath, buf);
+    await fs.promises.writeFile(localPath, buf);
   }
 
-  if (!fs.existsSync(localPath)) {
+  try {
+    await fs.promises.access(localPath, fs.constants.F_OK);
+  } catch {
     throw new Error(`文件不存在: ${localPath}`);
   }
 
-  const plaintext = fs.readFileSync(localPath);
+  const plaintext = await fs.promises.readFile(localPath);
   const rawsize = plaintext.length;
   const rawfilemd5 = crypto.createHash("md5").update(plaintext).digest("hex");
   const filesize = aesEcbPaddedSize(rawsize);
@@ -332,14 +334,18 @@ export async function sendTtsAsMp3File(
   }
   const ts = Date.now();
   const mp3Path = path.join(mediaDir, `voice_out_${ts}.mp3`);
-  fs.mkdirSync(mediaDir, { recursive: true });
+  await fs.promises.mkdir(mediaDir, { recursive: true });
   // 和 tts.ts / asr.ts 统一：明确 /bin/bash 避免 PATH 劫持，30s timeout 覆盖常见 TTS API
-  execFileSync("/bin/bash", [TTS_HOOK, text, mp3Path], { timeout: 30_000, stdio: "pipe" });
-  if (!fs.existsSync(mp3Path)) throw new Error(`TTS hook 未生成 mp3: ${TTS_HOOK}`);
+  await execFileText("/bin/bash", [TTS_HOOK, text, mp3Path], { timeout: 30_000 });
+  try {
+    await fs.promises.access(mp3Path, fs.constants.F_OK);
+  } catch {
+    throw new Error(`TTS hook 未生成 mp3: ${TTS_HOOK}`);
+  }
   try {
     // uploadAndSendMedia 按 mime 自动把 mp3 判成 itemType=4 file，发成文件附件
     await uploadAndSendMedia(baseUrl, token, to, mp3Path, contextToken, mediaDir);
   } finally {
-    try { fs.unlinkSync(mp3Path); } catch {}
+    try { await fs.promises.unlink(mp3Path); } catch {}
   }
 }

@@ -10,10 +10,11 @@ import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import { redactSensitive } from "../config.js";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import fs from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { execFileText } from "../process-utils.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -75,22 +76,27 @@ function getNickname(userId: string): string {
 
 const FEISHU_MEDIA_DIR = join(homedir(), ".forge-hub", "state", "feishu", "media");
 
-function downloadFeishuMedia(messageId: string, type: "image" | "file", fileKey: string, fileName?: string): string | null {
+async function downloadFeishuMedia(
+  messageId: string,
+  type: "image" | "file",
+  fileKey: string,
+  fileName?: string,
+): Promise<string | null> {
   // 注意：lark-cli 的 --type 只支持 "image" | "file"，audio 也用 "file"（飞书把 audio 当普通附件发）
 
   if (!fileKey || !messageId) return null;
   try {
-    mkdirSync(FEISHU_MEDIA_DIR, { recursive: true });
+    await fs.promises.mkdir(FEISHU_MEDIA_DIR, { recursive: true });
     const outputName = fileName ?? `${type}_${Date.now()}.${type === "image" ? "png" : "dat"}`;
     // lark-cli only accepts relative paths
-    execFileSync(LARK_CLI, [
+    await execFileText(LARK_CLI, [
       "im", "+messages-resources-download",
       "--message-id", messageId,
       "--file-key", fileKey,
       "--type", type,
       "--output", outputName,
       "--as", "bot",
-    ], { encoding: "utf-8", timeout: 30000, cwd: FEISHU_MEDIA_DIR });
+    ], { timeout: 30000, cwd: FEISHU_MEDIA_DIR });
     const fullPath = join(FEISHU_MEDIA_DIR, outputName);
     hub.log(`📎 下载: ${outputName}`);
     return fullPath;
@@ -249,7 +255,7 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const imageKeyMatch = content.match(/\[(?:Image|图片):\s*(img_[^\]]+)\]/);
   if (imageKeyMatch && messageId) {
     const imageKey = imageKeyMatch[1];
-    const filePath = downloadFeishuMedia(messageId, "image", imageKey);
+    const filePath = await downloadFeishuMedia(messageId, "image", imageKey);
     content = filePath ? `[图片] ${filePath}` : `[图片: ${imageKey}]`;
   } else if (msgType === "file" && messageId) {
     // Compact mode: file key might be in content as "[File: file_v3_xxx]"
@@ -257,7 +263,7 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
     const fileKey = fileKeyMatch?.[1] ?? (event.file_key ?? "") as string;
     const fileName = (event.file_name ?? "file") as string;
     if (fileKey) {
-      const filePath = downloadFeishuMedia(messageId, "file", fileKey, fileName);
+      const filePath = await downloadFeishuMedia(messageId, "file", fileKey, fileName);
       content = filePath ? `[文件] ${filePath}` : content || `[文件: ${fileName}]`;
     }
   } else if (msgType === "audio") {
@@ -266,7 +272,7 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
     const audioKeyMatch = content.match(/\[Audio:\s*(\S+?)\]/);
     const fileKey = audioKeyMatch?.[1] ?? (event.file_key ?? "") as string;
     if (fileKey && messageId) {
-      const filePath = downloadFeishuMedia(messageId, "file", fileKey);
+      const filePath = await downloadFeishuMedia(messageId, "file", fileKey);
       if (filePath) {
         // Hub 层 ASR：走 FORGE_HUB_ASR_HOOK（用户 hook 可接 Whisper / MiniMax /
         // 或参考 examples/feishu-stream-asr.ts 接飞书原生 speech_to_text）
@@ -367,12 +373,12 @@ const plugin: ChannelPlugin = {
       const idFlag = to.startsWith("oc_") ? "--chat-id" : "--user-id";
 
       if (type === "text") {
-        execFileSync(LARK_CLI, [
+        await execFileText(LARK_CLI, [
           "im", "+messages-send",
           idFlag, to,
           "--text", content,
           "--as", "bot",
-        ], { encoding: "utf-8", timeout: 15000 });
+        ], { timeout: 15000 });
 
         hub.log(`→ ${to.slice(0, 20)}...: ${content.slice(0, 60)}`);
         // History recorded by Hub layer
@@ -380,12 +386,12 @@ const plugin: ChannelPlugin = {
       }
 
       if (type === "file" && filePath) {
-        execFileSync(LARK_CLI, [
+        await execFileText(LARK_CLI, [
           "im", "+messages-send",
           idFlag, to,
           "--file", filePath,
           "--as", "bot",
-        ], { encoding: "utf-8", timeout: 30000 });
+        ], { timeout: 30000 });
 
         hub.log(`→ 文件: ${filePath.slice(0, 60)}`);
         return { success: true };
@@ -395,12 +401,12 @@ const plugin: ChannelPlugin = {
         // 飞书 audio 消息必须用 `--audio` flag（不是 --file）——否则飞书返
         // 230055: "file type does not match message type"。
         // lark-cli 的 --audio 接 basename，实际文件要在 cwd 里找。
-        execFileSync(LARK_CLI, [
+        await execFileText(LARK_CLI, [
           "im", "+messages-send",
           idFlag, to,
           "--audio", basename(filePath),
           "--as", "bot",
-        ], { encoding: "utf-8", timeout: 30000, cwd: dirname(filePath) });
+        ], { timeout: 30000, cwd: dirname(filePath) });
 
         hub.log(`→ 语音: "${content.slice(0, 30)}..."`);
         return { success: true };

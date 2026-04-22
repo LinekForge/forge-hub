@@ -7,6 +7,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 
 import type { HubConfig, WsData } from "./types.js";
 import {
@@ -49,7 +50,7 @@ import {
 import { triggerLock, triggerUnlock } from "./lock.js";
 import { checkPermissionRate, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS } from "./rate-limit.js";
 import { resolveRecipient } from "./resolve.js";
-import { appendHistory, getOutboundFrom } from "./history.js";
+import { appendHistory, getOutboundFrom, readRecentHistory } from "./history.js";
 import { synthesizeToOgg } from "./tts.js";
 import { getCurrentConfig, startedAt } from "./hub-state.js";
 
@@ -661,7 +662,7 @@ export function startServer(config: HubConfig): void {
             });
           } else {
             // Other channels: Hub does TTS → ogg, plugin sends the file
-            const oggPath = synthesizeToOgg(body.text);
+            const oggPath = await synthesizeToOgg(body.text);
             if (!oggPath) {
               return Response.json({ success: false, error: "TTS 合成失败" });
             }
@@ -672,7 +673,7 @@ export function startServer(config: HubConfig): void {
               filePath: oggPath,
               raw: { context_token: contextToken },
             });
-            try { fs.unlinkSync(oggPath); } catch {}
+            try { await fs.promises.rm(path.dirname(oggPath), { recursive: true, force: true }); } catch {}
           }
 
           if (result.success) {
@@ -706,18 +707,7 @@ export function startServer(config: HubConfig): void {
           let limit = parseInt(url.searchParams.get("limit") ?? "200", 10);
           if (!Number.isFinite(limit) || limit <= 0 || limit > 1000) limit = 200;
           const sinceTs = url.searchParams.get("since_ts");  // ISO 时间，可选
-          const historyFile = `${HUB_DIR}/state/${channel}/chat-history.jsonl`;
-          if (!fs.existsSync(historyFile)) {
-            return Response.json({ channel, history: [] });
-          }
-          const lines = fs.readFileSync(historyFile, "utf-8").trim().split("\n").filter(Boolean);
-          let entries = lines.map((line) => {
-            try { return JSON.parse(line) as { ts: string; [k: string]: unknown }; } catch { return null; }
-          }).filter((e): e is { ts: string; [k: string]: unknown } => e !== null);
-          if (sinceTs) {
-            entries = entries.filter((e) => typeof e.ts === "string" && e.ts > sinceTs);
-          }
-          const recent = entries.slice(-limit);
+          const recent = await readRecentHistory(channel, limit, sinceTs ?? undefined);
           return Response.json({ channel, history: recent });
         } catch (err) {
           return Response.json({ error: redactSensitive(String(err)) }, { status: 500 });

@@ -26,11 +26,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 import { logError } from "./config.js";
 import { getCurrentConfig } from "./hub-state.js";
 import { channelPlugins } from "./channel-registry.js";
+import { execFileText } from "./process-utils.js";
 
 const ASR_HOOK = process.env.FORGE_HUB_ASR_HOOK ?? "";
 
@@ -53,16 +53,16 @@ export async function resolveAsr(channel: string, audioPath: string): Promise<st
   }
 
   // override === "hook" 或 plugin 没实现 → 走用户 hook
-  return runAsrHook(channel, audioPath);
+  return await runAsrHook(channel, audioPath);
 }
 
-function runAsrHook(channel: string, audioPath: string): string | null {
+async function runAsrHook(channel: string, audioPath: string): Promise<string | null> {
   if (!ASR_HOOK) return null;
 
   let tmpDir: string;
   try {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "hub-asr-"));
-    fs.chmodSync(tmpDir, 0o700);
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "hub-asr-"));
+    await fs.promises.chmod(tmpDir, 0o700);
   } catch (err) {
     logError(`[asr] 临时目录创建失败: ${String(err)}`);
     return null;
@@ -70,16 +70,16 @@ function runAsrHook(channel: string, audioPath: string): string | null {
 
   const textPath = path.join(tmpDir, "out.txt");
   try {
-    execFileSync("/bin/bash", [ASR_HOOK, audioPath, textPath, channel], {
+    await execFileText("/bin/bash", [ASR_HOOK, audioPath, textPath, channel], {
       timeout: 30000,
-      encoding: "utf-8",
-      stdio: "pipe",
     });
-    if (!fs.existsSync(textPath)) {
+    try {
+      await fs.promises.access(textPath, fs.constants.F_OK);
+    } catch {
       logError(`[asr] hook 退出成功但未生成 text 文件: hook=${ASR_HOOK} channel=${channel} audio=${audioPath}`);
       return null;
     }
-    const text = fs.readFileSync(textPath, "utf-8").trim();
+    const text = (await fs.promises.readFile(textPath, "utf-8")).trim();
     if (!text) {
       logError(`[asr] hook 生成的 text 为空: hook=${ASR_HOOK} channel=${channel}`);
       return null;
@@ -89,6 +89,6 @@ function runAsrHook(channel: string, audioPath: string): string | null {
     logError(`[asr] hook 执行失败 (hook=${ASR_HOOK} channel=${channel}): ${String(err)}`);
     return null;
   } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
   }
 }

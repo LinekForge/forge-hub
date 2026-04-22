@@ -13,9 +13,9 @@ import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import { redactSensitive } from "../config.js";
 import { Database } from "bun:sqlite";
-import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { spawnText } from "../process-utils.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -132,22 +132,28 @@ const SEND_FILE_SCRIPT = `on run argv
   tell application "Messages" to send (POSIX file (item 1 of argv)) to chat id (item 2 of argv)
 end run`;
 
-function sendIMessage(chatGuid: string, text: string): string | null {
-  const res = spawnSync("osascript", ["-", text, chatGuid], {
-    input: SEND_SCRIPT,
-    encoding: "utf8",
-  });
-  if (res.status !== 0) return res.stderr.trim() || `osascript exit ${res.status}`;
+async function sendIMessage(chatGuid: string, text: string): Promise<string | null> {
+  try {
+    await spawnText("osascript", ["-", text, chatGuid], {
+      input: SEND_SCRIPT,
+      timeoutMs: 15000,
+    });
+  } catch (err) {
+    return String(err);
+  }
   trackEcho(chatGuid, text);
   return null;
 }
 
-function sendFile(chatGuid: string, filePath: string): string | null {
-  const res = spawnSync("osascript", ["-", filePath, chatGuid], {
-    input: SEND_FILE_SCRIPT,
-    encoding: "utf8",
-  });
-  if (res.status !== 0) return res.stderr.trim() || `osascript exit ${res.status}`;
+async function sendFile(chatGuid: string, filePath: string): Promise<string | null> {
+  try {
+    await spawnText("osascript", ["-", filePath, chatGuid], {
+      input: SEND_FILE_SCRIPT,
+      timeoutMs: 15000,
+    });
+  } catch (err) {
+    return String(err);
+  }
   trackEcho(chatGuid, "\x00att");
   return null;
 }
@@ -326,14 +332,14 @@ const plugin: ChannelPlugin = {
     // `to` is chat_guid (e.g. "iMessage;-;+1555...")
     try {
       if (type === "text") {
-        const err = sendIMessage(to, content);
+        const err = await sendIMessage(to, content);
         if (err) return { success: false, error: err };
         hub.log(`→ ${to.slice(0, 30)}...: ${content.slice(0, 60)}`);
         return { success: true };
       }
 
       if (type === "file" && filePath) {
-        const err = sendFile(to, filePath);
+        const err = await sendFile(to, filePath);
         if (err) return { success: false, error: err };
         hub.log(`→ 文件: ${filePath.slice(0, 60)}`);
         return { success: true };

@@ -12,14 +12,86 @@ import { STATE_DIR, logError } from "./config.js";
 import type { AllowEntry, Allowlist } from "./types.js";
 import { isAuthorizedSenderMatch } from "./message-auth.js";
 
-export function loadChannelState(channel: string, key: string): unknown {
+type CachedState = { value: unknown };
+type StateReadResult =
+  | { status: "ok"; value: unknown }
+  | { status: "missing"; filePath: string }
+  | { status: "error"; filePath: string; error: string };
+
+const stateCache = new Map<string, CachedState>();
+const channelWatchers = new Map<string, fs.FSWatcher>();
+
+function cacheKey(channel: string, key: string): string {
+  return `${channel}\x00${key}`;
+}
+
+function cloneState<T>(value: T): T {
+  return structuredClone(value);
+}
+
+function invalidateChannelState(channel: string, key?: string): void {
+  if (key) {
+    stateCache.delete(cacheKey(channel, key));
+    return;
+  }
+  for (const cacheId of stateCache.keys()) {
+    if (cacheId.startsWith(`${channel}\x00`)) stateCache.delete(cacheId);
+  }
+}
+
+function ensureChannelWatcher(channel: string): boolean {
+  if (channelWatchers.has(channel)) return true;
+
+  const dir = path.join(STATE_DIR, channel);
+  if (!fs.existsSync(dir)) return false;
+
+  try {
+    const watcher = fs.watch(dir, (_eventType, filename) => {
+      if (!filename) {
+        invalidateChannelState(channel);
+        return;
+      }
+      const name = String(filename);
+      if (!name.endsWith(".json")) return;
+      invalidateChannelState(channel, path.basename(name, ".json"));
+    });
+    watcher.on("error", (err) => {
+      channelWatchers.delete(channel);
+      invalidateChannelState(channel);
+      logError(`状态 watch 失效 (${channel}): ${String(err)}`);
+    });
+    watcher.unref?.();
+    channelWatchers.set(channel, watcher);
+    return true;
+  } catch (err) {
+    logError(`状态 watch 启动失败 (${channel}): ${String(err)}`);
+    return false;
+  }
+}
+
+function readChannelStateInternal(channel: string, key: string): StateReadResult {
+  const cached = stateCache.get(cacheKey(channel, key));
+  if (cached) return { status: "ok", value: cloneState(cached.value) };
+
   const filePath = path.join(STATE_DIR, channel, `${key}.json`);
   try {
-    if (fs.existsSync(filePath)) {
-      return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (!fs.existsSync(filePath)) return { status: "missing", filePath };
+
+    const value = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (ensureChannelWatcher(channel)) {
+      stateCache.set(cacheKey(channel, key), { value });
     }
+    return { status: "ok", value: cloneState(value) };
   } catch (err) {
-    logError(`读取状态 ${channel}/${key} 失败: ${String(err)}`);
+    return { status: "error", filePath, error: String(err) };
+  }
+}
+
+export function loadChannelState(channel: string, key: string): unknown {
+  const result = readChannelStateInternal(channel, key);
+  if (result.status === "ok") return result.value;
+  if (result.status === "error") {
+    logError(`读取状态 ${channel}/${key} 失败: ${result.error}`);
   }
   return null;
 }
@@ -34,6 +106,11 @@ export function saveChannelState(channel: string, key: string, value: unknown): 
     fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, filePath);
     try { fs.chmodSync(filePath, 0o600); } catch { /* ignore */ }
+    if (ensureChannelWatcher(channel)) {
+      stateCache.set(cacheKey(channel, key), { value: cloneState(value) });
+    } else {
+      stateCache.delete(cacheKey(channel, key));
+    }
   } catch (err) {
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     logError(`写入状态 ${channel}/${key} 失败: ${String(err)}`);
@@ -63,18 +140,14 @@ export type AllowlistReadResult =
   | { ok: false; error: string };
 
 export function readAllowlist(channel: string): AllowlistReadResult {
-  const filePath = path.join(STATE_DIR, channel, "allowlist.json");
-  if (!fs.existsSync(filePath)) {
-    return { ok: false, error: `allowlist not found: ${filePath}` };
+  const result = readChannelStateInternal(channel, "allowlist");
+  if (result.status === "ok") {
+    return { ok: true, allowlist: result.value as Allowlist };
   }
-  try {
-    return {
-      ok: true,
-      allowlist: JSON.parse(fs.readFileSync(filePath, "utf-8")) as Allowlist,
-    };
-  } catch (err) {
-    return { ok: false, error: `${String(err)} (path=${filePath})` };
+  if (result.status === "missing") {
+    return { ok: false, error: `allowlist not found: ${result.filePath}` };
   }
+  return { ok: false, error: `${result.error} (path=${result.filePath})` };
 }
 
 export function findAllowlistEntry(channel: string, senderId: string): AllowEntry | undefined {
