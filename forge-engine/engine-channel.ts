@@ -196,7 +196,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   // ── engine_add_task ──
   if (req.params.name === "engine_add_task") {
-    const args = req.params.arguments as EngineAddTaskArgs;
+    const args = req.params.arguments as unknown as EngineAddTaskArgs;
     const { hour, minute, second, target, start_date, end_date } = resolveTaskTiming(args);
 
     const id = crypto.randomBytes(4).toString("hex");

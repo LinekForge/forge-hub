@@ -26,7 +26,7 @@ export async function execFileText(
     ...options,
     encoding: "utf-8",
   });
-  return typeof stdout === "string" ? stdout : stdout.toString("utf-8");
+  return typeof stdout === "string" ? stdout : String(stdout);
 }
 
 export async function spawnText(
