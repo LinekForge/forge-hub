@@ -345,6 +345,10 @@ function onMessageImpl(msg: InboundMessage): void {
     log(`← [${msg.channel}] ${msg.from}: ${msg.content.slice(0, 60)}... (无订阅实例)`);
     return;
   }
+  const actualOnline = filtered.filter((id) => getInstances().has(id));
+  if (actualOnline.length === 0 && filtered.length > 0) {
+    logError(`⚠ 路由目标已全部离线（${filtered.join(",")}），消息未推送: ${msg.from}@${msg.channel}`);
+  }
   pushToInstances(filtered, {
     type: "message",
     channel: msg.channel,
