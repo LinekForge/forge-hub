@@ -19,9 +19,12 @@
 
 ## 前置要求
 
-- [Claude Code](https://code.claude.com) >= 2.1.81
+- [Claude Code](https://code.claude.com) >= 2.1.80
 - macOS（Linux 大部分功能可用，iMessage 通道仅 Mac）
 - [Bun](https://bun.sh) >= 1.0 · **源码安装必需**——Homebrew 装法 brew 自动帮装，不用管。源码装时请确保 `which bun` 有输出；bun 默认装到 `~/.bun/bin/`，首次装完需把 `export PATH="$HOME/.bun/bin:$PATH"` 加进 `~/.zshrc`（或等价 shell rc）。
+
+> [!IMPORTANT]
+> Claude Code Channels 当前仍处于 research preview。根据 Anthropic 官方 Channels Reference，**通道能力需要 `claude.ai` 登录**；**Console / API key 登录不支持**。Team / Enterprise 组织还需要先显式开启 channels。
 
 ## 快速开始
 
@@ -68,7 +71,7 @@ claude --dangerously-load-development-channels server:hub
 打开你绑的 IM 发消息，终端 Claude Code 收到。Claude 回复自动发回。
 
 > [!IMPORTANT]
-> `--dangerously-load-development-channels` 是 Anthropic Channels 协议的 opt-in flag——详见 [Channels Reference](https://code.claude.com/docs/en/channels-reference)。**最低 Claude Code 版本：2.1.81**。
+> `--dangerously-load-development-channels` 是 Anthropic Channels 协议的 opt-in flag——详见 [Channels Reference](https://code.claude.com/docs/en/channels-reference)。**基础 channel 能力最低 Claude Code 版本：2.1.80；远程审批 relay 需要 2.1.81+。**
 
 > [!IMPORTANT]
 > **`server:hub` 模式需要配 `approval_channels`**。Claude 跑 Bash / Write / Edit 等工具时会请求审批，hub-server 根据 `approval_channels` 把请求推到手机。没配的话**每个工具调用都会被 auto-deny**——用户看到 "Tool use rejected"。编辑 `~/.forge-hub/hub-config.json` 加 `{ "approval_channels": ["wechat"] }` 或你已配好的其他通道。详见 [配置.md §审批推送配置](配置.md)。

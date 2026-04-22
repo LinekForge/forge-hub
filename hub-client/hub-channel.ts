@@ -18,6 +18,12 @@ import { z } from "zod/v4-mini";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
+import {
+  getSessionConfigPaths,
+  isChannelMode,
+  readAndClearSessionConfig,
+  type SessionConfig,
+} from "./session-config.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -59,78 +65,7 @@ const INSTANCE_ID = getInstanceId();
 
 // HUB_DIR：和 hub-server 的 config.ts 保持一致，都读 FORGE_HUB_DIR env
 const HUB_DIR = process.env.FORGE_HUB_DIR ?? path.join(process.env.HOME ?? "~", ".forge-hub");
-const SESSION_FILE = path.join(HUB_DIR, "next-session.json");
-const LEGACY_NAME_FILE = path.join(HUB_DIR, "next-name.txt");
-const IDENTITIES_FILE = path.join(HUB_DIR, "state", "_hub", "instance-identities.json");
-
-interface SessionConfig {
-  tag?: string;
-  description?: string;
-  channels?: string[];
-  history?: Record<string, number>;
-}
-
-function readAndClearSessionConfig(): SessionConfig | null {
-  // 三层 fallback 之前每层 catch{} 静默——文件损坏 / 权限错都直接进下一层，
-  // 用户 wonder 为什么 channel 没订阅。每层失败 logError 让事故可追溯。
-  // 1. Try new JSON format (菜单栏新会话写的)
-  try {
-    if (fs.existsSync(SESSION_FILE)) {
-      const config = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8")) as SessionConfig;
-      fs.unlinkSync(SESSION_FILE);
-      return config;
-    }
-  } catch (err) {
-    logError(`session config layer 1 (next-session.json) 读失败: ${String(err)}`);
-  }
-
-  // 2. Fallback to legacy comma-separated format
-  try {
-    if (fs.existsSync(LEGACY_NAME_FILE)) {
-      const raw = fs.readFileSync(LEGACY_NAME_FILE, "utf-8").trim();
-      fs.unlinkSync(LEGACY_NAME_FILE);
-      if (!raw) return null;
-      const parts = raw.split(",");
-      const aliases: Record<string, string> = { wx: "wechat", tg: "telegram", im: "imessage", fs: "feishu" };
-      const tag = parts[0]?.trim() || undefined;
-      const description = parts[1]?.trim() || undefined;
-      const channelsRaw = parts[2]?.trim();
-      const channels = channelsRaw
-        ? (channelsRaw === "all" ? undefined : channelsRaw.split("+").map(c => aliases[c.toLowerCase()] ?? c.toLowerCase()))
-        : undefined;
-      return { tag, description, channels };
-    }
-  } catch (err) {
-    logError(`session config layer 2 (legacy next-name.txt) 读失败: ${String(err)}`);
-  }
-
-  // 3. Check Hub persistence — crash recovery for channel sessions only
-  try {
-    if (fs.existsSync(IDENTITIES_FILE)) {
-      const all = JSON.parse(fs.readFileSync(IDENTITIES_FILE, "utf-8")) as Record<string, Record<string, unknown>>;
-      const saved = all[INSTANCE_ID];
-      if (saved?.isChannel) {
-        return {
-          tag: saved.tag as string | undefined,
-          description: saved.description as string | undefined,
-          channels: saved.channels as string[] | undefined,
-        };
-      }
-    }
-  } catch (err) {
-    logError(`session config layer 3 (instance-identities.json) 读失败: ${String(err)}`);
-  }
-
-  // No launcher wrote session config — default to channel mode listening to all channels.
-  // Historical design assumed a launcher (e.g. menubar app) would write next-session.json before
-  // each `claude server:hub` invocation. Open-source users start hub-channel directly without
-  // a launcher, so without this default they'd land in tool mode and receive no messages despite
-  // having configured channels. "all" keyword is resolved to `undefined` by instance-manager (see
-  // instance-manager.ts handleWsMessage), which means "subscribe to every channel".
-  return { channels: ["all"] };
-}
-
-const SESSION_CONFIG = readAndClearSessionConfig();
+const { identitiesFile: IDENTITIES_FILE } = getSessionConfigPaths(HUB_DIR);
 
 // ── File log 辅助 ──────────────────────────────────────────────────────────
 // Claude Code 把 MCP subprocess 的 stderr 直接丢弃——没有 persistent debug file。
@@ -156,6 +91,8 @@ function logError(msg: string) {
   process.stderr.write(`[hub-client] ERROR: ${msg}\n`);
   writeFileLog("ERROR", msg);
 }
+
+const SESSION_CONFIG = readAndClearSessionConfig(getSessionConfigPaths(HUB_DIR), INSTANCE_ID, logError);
 
 // ── Orphan Cleanup ─────────────────────────────────────────────────────────
 
@@ -703,7 +640,7 @@ async function main() {
   const hubReady = await ensureHubRunning();
 
   // Channel mode = has channels subscription. Tool mode = no channels (even if has description)
-  const isChannel = SESSION_CONFIG?.channels != null && SESSION_CONFIG.channels.length > 0;
+  const isChannel = isChannelMode(SESSION_CONFIG);
 
   // Tool mode with description: persist name for menubar display
   if (!isChannel && SESSION_CONFIG?.description) {
