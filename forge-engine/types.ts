@@ -62,6 +62,8 @@ export interface RawScheduleEntry {
 
   /** 来源配置文件名（loadScheduleDir 注入） */
   _origin?: string;
+  /** 在来源配置文件里的条目索引（loadScheduleDir 注入） */
+  _entry_index?: number;
 
   /** 任意额外字段，传给 handler */
   [key: string]: unknown;

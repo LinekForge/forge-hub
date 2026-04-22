@@ -34,6 +34,7 @@ import type {
   ResolvedEntry,
   ScheduleHandler,
   RawScheduleEntry,
+  ScheduleFile,
 } from "./types.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -61,25 +62,30 @@ let reloadDebounce: ReturnType<typeof setTimeout> | null = null;
 
 // ── Random Expansion ────────────────────────────────────────────────────────
 
-function expandRandom(entry: RawScheduleEntry): RawScheduleEntry[] {
+export function expandRandom(entry: RawScheduleEntry): RawScheduleEntry[] {
   const start = entry.active_start ?? 6;
   const end = entry.active_end ?? 22;
-  const count = entry.daily_count ?? 10;
-  const perHour = entry.min_per_hour ?? 1;
-  const hours = end - start;
+  const count = Math.max(0, Math.floor(entry.daily_count ?? 10));
+  const perHour = Math.max(0, Math.floor(entry.min_per_hour ?? 1));
+  const hours = Math.max(0, end - start);
+
+  if (hours === 0 || count === 0) return [];
 
   const expanded: RawScheduleEntry[] = [];
   const base = { ...entry, expand: undefined };
 
-  // Guaranteed per hour
-  for (let h = 0; h < hours; h++) {
-    for (let j = 0; j < perHour; j++) {
-      expanded.push({ ...base, hour: start + h, minute: Math.floor(Math.random() * 60) });
+  // daily_count is the hard cap. min_per_hour is best-effort within that budget.
+  for (let round = 0; round < perHour && expanded.length < count; round++) {
+    for (let offset = 0; offset < hours && expanded.length < count; offset++) {
+      expanded.push({
+        ...base,
+        hour: start + offset,
+        minute: Math.floor(Math.random() * 60),
+      });
     }
   }
 
-  // Fill remaining
-  for (let k = 0; k < count - hours * perHour; k++) {
+  while (expanded.length < count) {
     expanded.push({
       ...base,
       hour: start + Math.floor(Math.random() * hours),
@@ -151,6 +157,57 @@ function shouldFire(entry: ResolvedEntry): boolean {
   return true;
 }
 
+function canScheduleToday(entry: ResolvedEntry, today: string = dateStr()): boolean {
+  if (entry.start_date && entry.start_date > today) return false;
+  if (entry.end_date && entry.end_date < today) return false;
+  return true;
+}
+
+export function removeScheduleEntryFromFile(
+  filePath: string,
+  entryIndex: number,
+): { removed: boolean; remaining: number } {
+  const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as ScheduleFile & Record<string, unknown>;
+  const schedules = Array.isArray(data.schedules) ? data.schedules : [];
+
+  if (entryIndex < 0 || entryIndex >= schedules.length) {
+    return { removed: false, remaining: schedules.length };
+  }
+
+  const nextSchedules = schedules.filter((_entry, index) => index !== entryIndex);
+
+  if (nextSchedules.length === 0) {
+    fs.unlinkSync(filePath);
+  } else {
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ ...data, schedules: nextSchedules }, null, 2),
+      "utf-8",
+    );
+  }
+
+  return { removed: true, remaining: nextSchedules.length };
+}
+
+function removeOneShotEntry(entry: ResolvedEntry): void {
+  if (entry.origin === "unknown") return;
+
+  const entryIndex = entry.raw._entry_index;
+  if (typeof entryIndex !== "number") return;
+
+  const filePath = path.join(SCHEDULE_DIR, entry.origin);
+  const result = removeScheduleEntryFromFile(filePath, entryIndex);
+
+  if (!result.removed) return;
+
+  if (result.remaining === 0) {
+    log(`🗑 一次性任务已删除，源文件已清空: ${entry.origin}`);
+    return;
+  }
+
+  log(`🗑 一次性任务已删除: ${entry.origin}#${entryIndex}`);
+}
+
 // ── Fire ────────────────────────────────────────────────────────────────────
 
 async function fire(entry: ResolvedEntry, server: Server): Promise<void> {
@@ -194,9 +251,8 @@ async function fire(entry: ResolvedEntry, server: Server): Promise<void> {
     updateState(sender);
 
     // Auto-delete one_shot
-    if (entry.one_shot && entry.origin !== "unknown") {
-      fs.unlinkSync(path.join(SCHEDULE_DIR, entry.origin));
-      log(`🗑 一次性任务已删除: ${entry.origin}`);
+    if (entry.one_shot) {
+      removeOneShotEntry(entry);
     }
   } catch (err) {
     logError(`触发失败 [${entry.sender}] @ ${timeStr(entry.hour, entry.minute)}: ${String(err)}`);
@@ -229,10 +285,13 @@ function updateState(sender: string): void {
 
 function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server): number {
   const now = Date.now();
+  const today = dateStr();
   const timers: ReturnType<typeof setTimeout>[] = [];
   let count = 0;
 
   for (const entry of entries) {
+    if (!canScheduleToday(entry, today)) continue;
+
     const target = new Date();
     target.setHours(entry.hour, entry.minute, entry.second, 0);
     const delay = target.getTime() - now;

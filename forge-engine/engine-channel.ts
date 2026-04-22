@@ -26,6 +26,9 @@ import {
   logError,
 } from "./config.js";
 import { startScheduler } from "./scheduler.js";
+import type { RawScheduleEntry } from "./types.js";
+import { resolveTaskTiming } from "./task-timing.js";
+import type { EngineAddTaskArgs } from "./task-timing.js";
 
 // ── Orphan Cleanup ─────────────────────────────────────────────────────────
 
@@ -64,6 +67,19 @@ function cleanOrphans(): void {
 
 const DAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"];
 const MONTH_NAMES = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function formatDate(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function formatTime(hour: number, minute: number, second: number): string {
+  const sec = second > 0 ? `:${pad2(second)}` : "";
+  return `${pad2(hour)}:${pad2(minute)}${sec}`;
+}
 
 // ── MCP Channel Server ─────────────────────────────────────────────────────
 
@@ -138,7 +154,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           one_shot: {
             type: "boolean",
-            description: "是否为一次性任务，触发后自动删除配置文件（默认 true）",
+            description: "是否为一次性任务，触发后自动删除该条任务（默认 true）",
           },
           weekdays: {
             type: "array",
@@ -180,73 +196,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   // ── engine_add_task ──
   if (req.params.name === "engine_add_task") {
-    const args = req.params.arguments as {
-      hour?: number;
-      minute?: number;
-      second?: number;
-      delay_seconds?: number;
-      template?: string;
-      prompt: string;
-      label?: string;
-      sender?: string;
-      one_shot?: boolean;
-      weekdays?: number[];
-      days?: number[];
-      months?: number[];
-      start_date?: string;
-      end_date?: string;
-    };
-
-    // Resolve time: delay_seconds → absolute, or use hour/minute/second directly
-    let hour: number;
-    let minute: number;
-    let second: number;
-
-    if (args.delay_seconds !== undefined) {
-      const target = new Date(Date.now() + args.delay_seconds * 1000);
-      hour = target.getHours();
-      minute = target.getMinutes();
-      second = target.getSeconds();
-    } else {
-      hour = args.hour ?? 0;
-      minute = args.minute ?? 0;
-      second = args.second ?? 0;
-    }
+    const args = req.params.arguments as EngineAddTaskArgs;
+    const { hour, minute, second, target, start_date, end_date } = resolveTaskTiming(args);
 
     const id = crypto.randomBytes(4).toString("hex");
     const oneShot = args.one_shot !== false; // default true
     const filename = oneShot ? `oneshot_${id}.json` : `task_${id}.json`;
     const filePath = path.join(SCHEDULE_DIR, filename);
 
+    const schedule: RawScheduleEntry = {
+      hour,
+      minute,
+      second,
+      template: args.template ?? "[提醒] {time}。{prompt}",
+      prompt: args.prompt,
+      label: args.label,
+      sender: args.sender ?? "reminder",
+      source: "ai" as const,
+      ...(oneShot ? { one_shot: true } : {}),
+      ...(args.weekdays ? { weekdays: args.weekdays } : {}),
+      ...(args.days ? { days: args.days } : {}),
+      ...(args.months ? { months: args.months } : {}),
+      ...(start_date ? { start_date } : {}),
+      ...(end_date ? { end_date } : {}),
+    };
+
     const config = {
-      schedules: [
-        {
-          hour,
-          minute,
-          second,
-          template: args.template ?? "[提醒] {time}。{prompt}",
-          prompt: args.prompt,
-          label: args.label,
-          sender: args.sender ?? "reminder",
-          source: "ai" as const,
-          ...(oneShot ? { one_shot: true } : {}),
-          ...(args.weekdays ? { weekdays: args.weekdays } : {}),
-          ...(args.days ? { days: args.days } : {}),
-          ...(args.months ? { months: args.months } : {}),
-          ...(args.start_date ? { start_date: args.start_date } : {}),
-          ...(args.end_date ? { end_date: args.end_date } : {}),
-        },
-      ],
+      schedules: [schedule],
     };
 
     try {
       fs.writeFileSync(filePath, JSON.stringify(config, null, 2), "utf-8");
-      const sec = second > 0 ? `:${String(second).padStart(2, "0")}` : "";
-      const timeStr = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}${sec}`;
-      log(`📝 添加任务: ${filename} @ ${timeStr}`);
+      const displayTime = target
+        ? `${formatDate(target)} ${formatTime(hour, minute, second)}`
+        : formatTime(hour, minute, second);
+      log(`📝 添加任务: ${filename} @ ${displayTime}`);
 
       // Build descriptive response
-      const parts: string[] = [`任务已添加: ${filename} @ ${timeStr}`];
+      const parts: string[] = [`任务已添加: ${filename} @ ${displayTime}`];
 
       // Schedule description
       const scheduleParts: string[] = [];
@@ -299,7 +286,9 @@ async function main() {
   log("engine started");
 }
 
-main().catch((err) => {
-  logError(`Fatal: ${String(err)}`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    logError(`Fatal: ${String(err)}`);
+    process.exit(1);
+  });
+}

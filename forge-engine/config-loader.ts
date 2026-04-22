@@ -115,8 +115,9 @@ export function loadScheduleDir(): RawScheduleEntry[] {
         const data: ScheduleFile = JSON.parse(
           fs.readFileSync(filePath, "utf-8"),
         );
-        for (const entry of data.schedules ?? []) {
+        for (const [index, entry] of (data.schedules ?? []).entries()) {
           entry._origin = file;
+          entry._entry_index = index;
           entries.push(entry);
         }
         configHashes.set(filePath, fileHash(filePath));

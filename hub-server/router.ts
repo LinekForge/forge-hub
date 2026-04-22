@@ -19,38 +19,89 @@ export interface RouteResult {
 
 // ── @提及解析 ───────────────────────────────────────────────────────────────
 
+interface MentionCandidate {
+  name: string;
+  instanceId: string;
+  kind: "tag" | "id";
+}
+
+function isLeadingMentionBoundary(content: string, atIndex: number): boolean {
+  if (atIndex === 0) return true;
+  return /[\s([{"'“‘<,，;；:：、]/.test(content[atIndex - 1] ?? "");
+}
+
+function isTrailingMentionBoundary(content: string, endIndex: number): boolean {
+  if (endIndex >= content.length) return true;
+  return /[\s)\]}>"'“”‘’<.,!?;:，。！？；：、]/.test(content[endIndex] ?? "");
+}
+
+function buildMentionCandidates(
+  instances: Map<string, ConnectedInstance>,
+): MentionCandidate[] {
+  const candidates: MentionCandidate[] = [];
+
+  for (const [id, inst] of instances) {
+    if (inst.tag) {
+      candidates.push({ name: inst.tag, instanceId: id, kind: "tag" });
+    }
+    candidates.push({ name: id, instanceId: id, kind: "id" });
+  }
+
+  candidates.sort((a, b) => {
+    const lengthDiff = b.name.length - a.name.length;
+    if (lengthDiff !== 0) return lengthDiff;
+    if (a.kind === b.kind) return 0;
+    return a.kind === "tag" ? -1 : 1;
+  });
+
+  return candidates;
+}
+
 /**
  * 扫描整条消息里的 @mentions，只匹配在线实例的名字或 ID。
- * 匹配到的从消息里去掉。不管 @ 在开头、中间还是结尾。
+ * 只有独立 token 才算 mention，避免把邮箱或正文里的 @xxx 误判成路由。
  */
 function parseTargets(
   content: string,
   instances: Map<string, ConnectedInstance>,
 ): { targets: string[]; rest: string } {
-  // Collect known tags and IDs (longer first to avoid partial matches)
-  const knownNames: string[] = [];
-  for (const [id, inst] of instances) {
-    knownNames.push(id);
-    if (inst.tag) knownNames.push(inst.tag);
-  }
-  knownNames.sort((a, b) => b.length - a.length); // longest first
+  const candidates = buildMentionCandidates(instances);
+  const targets = new Set<string>();
+  let rest = "";
 
-  const targets: string[] = [];
-  let rest = content;
-
-  // Search for @knownName in the message (no space required after name)
-  for (const name of knownNames) {
-    const pattern = `@${name}`;
-    if (rest.includes(pattern)) {
-      targets.push(name);
-      rest = rest.replace(pattern, "").trim();
+  for (let index = 0; index < content.length; ) {
+    if (content[index] !== "@" || !isLeadingMentionBoundary(content, index)) {
+      rest += content[index] ?? "";
+      index++;
+      continue;
     }
+
+    const matched = candidates.find((candidate) => {
+      const endIndex = index + 1 + candidate.name.length;
+      return (
+        content.startsWith(candidate.name, index + 1) &&
+        isTrailingMentionBoundary(content, endIndex)
+      );
+    });
+
+    if (!matched) {
+      rest += content[index] ?? "";
+      index++;
+      continue;
+    }
+
+    targets.add(matched.instanceId);
+    index += 1 + matched.name.length;
   }
 
-  // Clean up extra whitespace
-  rest = rest.replace(/\s+/g, " ").trim();
+  rest = rest
+    .replace(/\s*([,，.。!?！？;；:：、])\s*/g, "$1 ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[,，.。!?！？;；:：、\s]+/, "")
+    .replace(/[,，.。!?！？;；:：、\s]+$/, "");
 
-  return { targets, rest };
+  return { targets: [...targets], rest };
 }
 
 // ── Route ───────────────────────────────────────────────────────────────────
@@ -72,24 +123,8 @@ export function route(
 
   // Has @prefix → targeted delivery (match by name first, then by id)
   if (requestedTargets.length > 0) {
-    const validTargets: string[] = [];
-    for (const target of requestedTargets) {
-      // Try tag match
-      let found = false;
-      for (const [id, inst] of instances) {
-        if (inst.tag === target) {
-          validTargets.push(id);
-          found = true;
-          break;
-        }
-      }
-      // Fallback to id match
-      if (!found && instances.has(target)) {
-        validTargets.push(target);
-      }
-    }
     return {
-      targets: validTargets,
+      targets: requestedTargets,
       targeted: true,
       content: rest,
     };
