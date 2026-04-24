@@ -123,11 +123,7 @@ export async function fetchHealthFallback(): Promise<OverviewData | null> {
   }
 }
 
-export async function sendMessage(content: string, channels?: string[], instance?: string): Promise<boolean> {
-  if (channels?.length) {
-    const data = await post<{ any_ok: boolean }>("/send", { channels, content, to: "local://operator" });
-    return data?.any_ok ?? false;
-  }
+export async function sendMessage(content: string, instance?: string): Promise<boolean> {
   const data = await post<{ success: boolean }>("/homeland/send", { content, instance });
   return data?.success ?? false;
 }

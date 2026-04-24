@@ -15,6 +15,7 @@ import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { execFileText } from "../process-utils.js";
 import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
+import { assertFileWithinMediaSizeLimit } from "../media-policy.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -85,6 +86,7 @@ async function downloadFeishuMedia(
   // 注意：lark-cli 的 --type 只支持 "image" | "file"，audio 也用 "file"（飞书把 audio 当普通附件发）
 
   if (!fileKey || !messageId) return null;
+  let fullPath = "";
   try {
     await fs.promises.mkdir(FEISHU_MEDIA_DIR, { recursive: true });
     const outputName = sanitizeMediaFileName(fileName ?? `${type}.${type === "image" ? "png" : "dat"}`);
@@ -97,11 +99,13 @@ async function downloadFeishuMedia(
       "--output", outputName,
       "--as", "bot",
     ], { timeout: 30000, cwd: FEISHU_MEDIA_DIR });
-    const fullPath = join(FEISHU_MEDIA_DIR, outputName);
+    fullPath = join(FEISHU_MEDIA_DIR, outputName);
     await assertRealPathInsideDir(FEISHU_MEDIA_DIR, fullPath);
+    await assertFileWithinMediaSizeLimit(fullPath, `Feishu 媒体 ${outputName}`);
     hub.log(`📎 下载: ${outputName}`);
     return fullPath;
   } catch (err) {
+    if (fullPath) await fs.promises.unlink(fullPath).catch(() => {});
     hub.logError(`媒体下载失败: ${String(err)}`);
     return null;
   }

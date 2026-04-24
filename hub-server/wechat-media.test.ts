@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { downloadMediaItem } from "./channels/wechat-media.js";
+import { downloadMediaItem, uploadAndSendMedia } from "./channels/wechat-media.js";
 import type { MessageItem } from "./channels/wechat-types.js";
 
 const tempDirs: string[] = [];
@@ -55,5 +55,47 @@ describe("downloadMediaItem", () => {
     expect(path.dirname(media!.filePath)).toBe(mediaDir);
     expect(fs.readFileSync(media!.filePath, "utf-8")).toBe("payload");
     expect(fs.existsSync(path.join(root, "secret.txt"))).toBe(false);
+  });
+});
+
+describe("uploadAndSendMedia", () => {
+  test("creates media dir before downloading HTTP URL attachments", async () => {
+    const root = mkTempDir("forge-hub-wechat-upload-");
+    const mediaDir = path.join(root, "wechat", "media");
+    const remoteUrl = "https://files.test/report.pdf";
+    const calls: string[] = [];
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      if (url === remoteUrl) {
+        return new Response("hello", {
+          headers: {
+            "content-type": "application/pdf",
+            "content-length": "5",
+          },
+        });
+      }
+      if (url === "https://api.test/ilink/bot/getuploadurl") {
+        return new Response(JSON.stringify({ upload_param: "upload-param" }));
+      }
+      if (url.startsWith("https://novac2c.cdn.weixin.qq.com/c2c/upload")) {
+        expect(init?.method).toBe("POST");
+        return new Response("", {
+          headers: { "x-encrypted-param": "download-param" },
+        });
+      }
+      if (url === "https://api.test/ilink/bot/sendmessage") {
+        return new Response("{}");
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    expect(fs.existsSync(mediaDir)).toBe(false);
+    await uploadAndSendMedia("https://api.test", "token", "wx-user", remoteUrl, "ctx", mediaDir);
+
+    expect(fs.existsSync(mediaDir)).toBe(true);
+    expect(fs.readdirSync(mediaDir).some((name) => /^dl_\d+\.pdf$/.test(name))).toBe(true);
+    expect(calls).toContain(remoteUrl);
   });
 });

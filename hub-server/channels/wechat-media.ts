@@ -11,6 +11,12 @@ import { apiFetch, generateClientId } from "./wechat-ilink.js";
 import { MSG_TYPE_BOT, MSG_STATE_FINISH } from "./wechat-types.js";
 import { execFileText } from "../process-utils.js";
 import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
+import {
+  assertBufferWithinMediaSizeLimit,
+  assertFileWithinMediaSizeLimit,
+  responseToBufferWithMediaLimit,
+  writeResponseToFileWithMediaLimit,
+} from "../media-policy.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -74,7 +80,7 @@ async function cdnDownload(encryptedQueryParam: string): Promise<Buffer> {
         }
         throw new Error(`CDN download failed: ${res.status}`);
       }
-      return Buffer.from(await res.arrayBuffer());
+      return await responseToBufferWithMediaLimit(res, "WeChat CDN 媒体");
     } catch (err) {
       clearTimeout(timer);
       if (attempt < MAX_RETRIES - 1 && String(err).includes("500")) continue;
@@ -125,6 +131,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
       const ext = detectImageExt(decrypted);
       const fileName = `img_${ts}.${ext}`;
+      assertBufferWithinMediaSizeLimit(decrypted, fileName);
       const filePath = path.join(mediaDir, fileName);
       await fs.promises.writeFile(filePath, decrypted);
       return { type: "image", filePath, fileName };
@@ -139,6 +146,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
       const origName = item.file_item.file_name || `file_${ts}`;
       const fileName = sanitizeMediaFileName(origName, ts);
+      assertBufferWithinMediaSizeLimit(decrypted, fileName);
       const filePath = path.join(mediaDir, fileName);
       await fs.promises.writeFile(filePath, decrypted);
       await assertRealPathInsideDir(mediaDir, filePath);
@@ -153,6 +161,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const encrypted = await cdnDownload(queryParam);
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
       const fileName = `video_${ts}.mp4`;
+      assertBufferWithinMediaSizeLimit(decrypted, fileName);
       const filePath = path.join(mediaDir, fileName);
       await fs.promises.writeFile(filePath, decrypted);
       return { type: "video", filePath, fileName };
@@ -166,6 +175,7 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const encrypted = await cdnDownload(queryParam);
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
       const fileName = `voice_${ts}.silk`;
+      assertBufferWithinMediaSizeLimit(decrypted, fileName);
       const filePath = path.join(mediaDir, fileName);
       await fs.promises.writeFile(filePath, decrypted);
       return { type: "voice", filePath, fileName };
@@ -208,6 +218,7 @@ export async function uploadAndSendMedia(
   if (filePath.startsWith("http://") || filePath.startsWith("https://")) {
     const res = await fetch(filePath, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`下载失败: HTTP ${res.status}`);
+    await fs.promises.mkdir(mediaDir, { recursive: true });
     const contentType = res.headers.get("content-type") || "";
     const ctExtMap: Record<string, string> = {
       "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
@@ -218,8 +229,8 @@ export async function uploadAndSendMedia(
     const urlExt = path.extname(new URL(filePath).pathname);
     const ext = ctExt || (urlExt && urlExt !== "" ? urlExt : ".bin");
     localPath = path.join(mediaDir, `dl_${Date.now()}${ext}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    await fs.promises.writeFile(localPath, buf);
+    await writeResponseToFileWithMediaLimit(res, localPath, `WeChat URL 媒体 ${path.basename(localPath)}`);
+    await assertRealPathInsideDir(mediaDir, localPath);
   }
 
   try {
@@ -227,6 +238,7 @@ export async function uploadAndSendMedia(
   } catch {
     throw new Error(`文件不存在: ${localPath}`);
   }
+  await assertFileWithinMediaSizeLimit(localPath, path.basename(localPath));
 
   const plaintext = await fs.promises.readFile(localPath);
   const rawsize = plaintext.length;

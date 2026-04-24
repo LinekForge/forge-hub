@@ -1093,7 +1093,7 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
     }));
     // 真实 API 调用
     const hubId = nativeSessions.find(s => s.sid === activeId)?.hubInstanceId ?? activeId;
-    void sendMessage(text, undefined, hubId).then((ok) => {
+    void sendMessage(text, hubId).then((ok) => {
       if (!ok) {
         console.warn('[hub] 消息发送失败：当前接手实例可能已离线');
         const failKey = `${activeId}::homeland`;

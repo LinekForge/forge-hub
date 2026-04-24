@@ -11,7 +11,7 @@ cd hub-app
 ./build.sh
 ```
 
-需要：macOS 13+、Xcode Command Line Tools（提供 `swiftc`）、Bun（编译 dashboard）。
+需要：Apple Silicon (arm64) Mac、macOS 13+、Xcode Command Line Tools（提供 `swiftc`）、Bun（编译 dashboard）。
 
 产物：`Forge Hub.app`，双击启动。
 

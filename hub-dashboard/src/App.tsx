@@ -386,6 +386,7 @@ export default function App() {
       setAuthError(result.error ?? "认证失败");
       return;
     }
+    setDashboardBearerToken(token);
     setAuthToken("");
     setAuthBusy(false);
     setAuthError("");

@@ -10,6 +10,7 @@ import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import fsMod from "node:fs";
 import pathMod from "node:path";
 import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
+import { writeResponseToFileWithMediaLimit } from "../media-policy.js";
 import { STATE_DIR } from "../config.js";
 
 // ── Module State ────────────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ async function downloadTgFile(fileId: string, fileName: string): Promise<string 
     await fsMod.promises.mkdir(TG_MEDIA_DIR, { recursive: true });
     const safeName = sanitizeMediaFileName(fileName);
     const filePath = pathMod.join(TG_MEDIA_DIR, safeName);
-    await fsMod.promises.writeFile(filePath, Buffer.from(await res.arrayBuffer()));
+    await writeResponseToFileWithMediaLimit(res, filePath, `Telegram 媒体 ${safeName}`);
     await assertRealPathInsideDir(TG_MEDIA_DIR, filePath);
     hub.log(`📎 下载: ${safeName}`);
     return filePath;
