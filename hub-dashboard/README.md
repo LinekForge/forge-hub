@@ -19,6 +19,7 @@ Forge Hub 的本地 Dashboard。
 
 - 对开源仓库开发者：这是 repo 内置的本地 Web UI
 - 对默认安装用户：装完即可直接使用，不再需要手工补 dashboard 产物
+- 对 Native Client 用户：`hub-app/` 的 WKWebView 加载同一套 UI，通过 JS bridge 获得会话管理能力。详见 [hub-app/README.md](../hub-app/README.md)
 
 ## 本地开发
 
