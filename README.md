@@ -4,8 +4,9 @@
 
 - **5 通道** — 微信 / Telegram / 飞书 / iMessage / Homeland（本地）
 - **本地 Dashboard** — 浏览器里看实例、审批队列和 Homeland 对话
+- **Native Client** *(preview)* — macOS 原生客户端，会话管理 + Dashboard 合为一体。按 CC 会话组织联系人、多源聊天（jsonl 对话 / 各通道消息切换）、右键操作（命名 / 置顶 / 通道恢复 / 聚焦终端）。双击 `Forge Hub.app` 即用
 - **远程审批** — Claude 要 `rm -rf`，你不在电脑前？手机上 `yes xxxxx` 或 `no xxxxx` 批准/拒绝
-- **多实例路由** — 多个 Claude Code 窗口同时跑，`@tag` 找对的那个，互不串线
+- **多实例路由** — 多个 Claude Code 窗口同时跑，`@tag` 或 `@描述` 找对的那个，无 @ 时广播给所有订阅者
 - **紧急锁定** — 任意通道发自定暗号，立即冻结所有远程
 - **通道自愈** — watchdog 每 2 分钟扫描，unhealthy 通道自动重启
 - **实验性定时引擎** — [Forge Engine](forge-engine/) 按 schedule 给 Claude 发心跳、提醒、指令；源码已提供，但需要单独手动配置
@@ -14,12 +15,12 @@
 
 ```
 微信 / TG / 飞书 / iMessage  ─▶  Hub Server (本地常驻)  ─▶  Claude Code (MCP)
-Homeland / Dashboard（本地） ─▶         ▲                          │
-                                        └──── reply / approve ─────┘
+Homeland / Dashboard（浏览器）─▶         ▲                          │
+Native Client（macOS app）   ─▶         └──── reply / approve ─────┘
 ```
 
 > [!NOTE]
-> `hub-dashboard/` 是本地 Dashboard。源码工作区里可以单独 `bun run build`；而 `forge-hub install` 现在也会自动部署并构建 dashboard 产物，Hub Server 启动后可直接静态托管。
+> `hub-dashboard/` 是本地 Dashboard，浏览器打开即用。`hub-app/` 是 macOS 原生客户端 *(preview)*——把 Dashboard UI 嵌入 WKWebView，加上会话管理（来自 [forge-launcher](https://github.com/LinekForge/forge-launcher) 的 session 扫描能力）。编译：`cd hub-app && ./build.sh`，双击 `Forge Hub.app` 启动。
 
 > [!NOTE]
 > 如果 Hub 开启了 `HUB_API_TOKEN`，Dashboard 仍可直接打开静态页；第一次读取实例、审批或 Homeland 数据时，浏览器会提示输入 token。认证成功后，Hub 会写入一个 HttpOnly cookie，后续 API 和 SSE 会自动复用。
@@ -194,6 +195,11 @@ hub-server/                  ← 常驻进程，本机 :9900
     └── imessage.ts          ← via AppleScript + chat.db
 
 hub-client/hub-channel.ts    ← MCP server，跑在 Claude Code 实例里
+hub-app/                     ← macOS 原生客户端 (preview)
+├── app/*.swift              ← Swift shell + WKWebView + JS bridge
+├── build.sh                 ← 编译脚本（swiftc + dashboard build）
+└── shared/scan-sessions.py  ← CC 会话扫描（复用自 forge-launcher）
+
 forge-cli/forge.ts           ← 日常管理 CLI (fh)
 cli.ts                       ← 安装管理（forge-hub install/uninstall/doctor）
 hub-test-harness/            ← 独立测试 binary（不污染生产 hub）
@@ -235,7 +241,8 @@ forge-hub install / uninstall / doctor
 | [架构.md](架构.md) | 组件关系 + 消息流 + 通道矩阵 |
 | [运行时状态.md](运行时状态.md) | 目录结构 + 配置 / 状态文件 schema |
 | [forge-engine/README.md](forge-engine/README.md) | Forge Engine 的实验性手动配置 |
-| [hub-dashboard/README.md](hub-dashboard/README.md) | 本地 Dashboard（实验性）的构建、接入与运行方式 |
+| [hub-dashboard/README.md](hub-dashboard/README.md) | 本地 Dashboard 的构建、接入与运行方式 |
+| [hub-app/](hub-app/) | Native Client *(preview)* — 编译与使用 |
 | [hub-docs/channel-plugin-guide.md](hub-docs/channel-plugin-guide.md) | 写新通道插件 |
 | [examples/echo.ts](examples/echo.ts) | 最小通道示例（~150 行） |
 | [examples/pretooluse-guard.sh](examples/pretooluse-guard.sh) | 远程审批 hook 示例 |
