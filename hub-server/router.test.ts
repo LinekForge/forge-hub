@@ -141,7 +141,7 @@ describe("router", () => {
     });
   });
 
-  test("fails closed instead of broadcasting when multiple instances are online without a primary", () => {
+  test("broadcasts to all instances when multiple are online without @mention", () => {
     const instances = new Map<string, ConnectedInstance>([
       ["instance-1", makeInstance("instance-1", "ops")],
       ["instance-2", makeInstance("instance-2", "qa")],
@@ -150,13 +150,9 @@ describe("router", () => {
     const result = route(makeMessage("please handle this"), instances, baseConfig);
 
     expect(result).toEqual({
-      targets: [],
+      targets: ["instance-1", "instance-2"],
       targeted: false,
       content: "please handle this",
-      failure: {
-        kind: "ambiguous_route",
-        detail: "当前有多个在线实例，但 primary_instance 未配置。请显式 @tag 或先设置主实例。",
-      },
     });
   });
 });
