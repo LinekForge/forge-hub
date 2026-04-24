@@ -144,6 +144,7 @@ chmod +x ~/.claude/hooks/pretooluse-guard.sh
 | **telegram** | 独立 Bot 账号 | ❌ 默认单一；可按需开放给他人 | 境内需代理 |
 | **feishu** | 企业自建应用 | ❌ 默认单一；权限体系允许扩展 | 需 [`@larksuite/cli`](https://www.npmjs.com/package/@larksuite/cli) 认证 |
 | **imessage** | user 本人 Apple ID | ✅ **唯一支持**——走 chat.db + AppleScript | 需 Full Disk Access（macOS） |
+| **homeland** | 本机 Dashboard / Operator | ❌ 本地通道，不代回第三方 | 需 allowlist `local://operator` |
 
 ## Privacy & Trust
 
@@ -192,9 +193,11 @@ hub-server/                  ← 常驻进程，本机 :9900
     ├── wechat.ts            ← via iLink HTTP
     ├── telegram.ts          ← via Bot API
     ├── feishu.ts            ← via lark-cli
-    └── imessage.ts          ← via AppleScript + chat.db
+    ├── imessage.ts          ← via AppleScript + chat.db
+    └── homeland.ts          ← 本地 Dashboard / Operator 通道
 
 hub-client/hub-channel.ts    ← MCP server，跑在 Claude Code 实例里
+hub-dashboard/               ← React 本地 Dashboard，install 默认构建并由 hub-server 托管
 hub-app/                     ← macOS 原生客户端 (preview)
 ├── app/*.swift              ← Swift shell + WKWebView + JS bridge
 ├── build.sh                 ← 编译脚本（swiftc + dashboard build）
@@ -236,6 +239,7 @@ forge-hub install / uninstall / doctor
 
 | 文档 | 内容 |
 |------|------|
+| [维护地图.md](维护地图.md) | 维护边界 / 成熟度层级 / 公共契约 / 改动验证菜单 |
 | [配置.md](配置.md) | 每通道凭证 / hub-config / TTS hook / 锁定暗号 |
 | [部署.md](部署.md) | 手动部署 / 升级 / 卸载 / Linux |
 | [架构.md](架构.md) | 组件关系 + 消息流 + 通道矩阵 |

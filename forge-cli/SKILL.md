@@ -26,6 +26,7 @@ forge-hub 命令行管理工具。通过 Bash 调用。
 
 - `fh hub allow <channel> <id> <nickname>` — 授权联系人（需 Touch ID / prompt 验证）。如 `fh hub allow wechat <sender_id>@im.wechat 用户`
 - `fh hub revoke <channel> <id|nickname>` — 撤销授权（需 Touch ID / prompt 验证）
+- `fh hub owner <channel> [id|nickname|--clear]` — 查看、设置或清除远程审批 owner；审批回复只认 owner
 
 ## 紧急锁定（panic button）
 

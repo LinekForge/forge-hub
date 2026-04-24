@@ -10,7 +10,7 @@ Forge Hub 的本地 Dashboard。
 
 ## 当前定位
 
-- **experimental，但已经进入 install 默认部署面**
+- **默认部署，但仍在迭代**
 - `forge-hub install` 会部署 dashboard 源码并自动构建 `hub-dashboard/dist`
 - 在仓库工作区单独 `bun run build` 后，`hub-server` 也同样会静态托管这个产物
 - 如果 Hub 开启了 `HUB_API_TOKEN`，Dashboard 首次读取数据时会提示输入 token；成功后由 Hub 写入 HttpOnly cookie，后续 API 与 SSE 自动复用
@@ -63,12 +63,15 @@ Dashboard 目前主要依赖这些 Hub 端点：
 - `/api/overview`
 - `/api/status`
 - `/api/pending`
+- `/api/history`
+- `/api/send`
 - `/api/pending/:id/approve`
 - `/api/pending/:id/deny`
 - `/api/pending/:id/dismiss`
 - `/api/homeland/send`
 - `/api/homeland/stream`
 - `/api/homeland/presence`
+- `/api/dashboard-auth`
 
 Hub server 同时兼容这些端点的根路径别名，方便脚本和旧调用方继续直接打 `/overview`、`/pending` 这一类路径。
 

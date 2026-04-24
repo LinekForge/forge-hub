@@ -16,15 +16,47 @@ bun hub-test-harness/harness.ts # 直接跑 8 场景 harness
 fh hub self-test                # 走对外 CLI 包装再跑一遍
 ```
 
-改动后按影响范围跑：
+## 维护入口
+
+动手前先按影响范围读文档：
+
+| 要改什么 | 先看哪里 |
+|----------|----------|
+| 项目整体边界 / 成熟度 / 公共契约 | [维护地图.md](维护地图.md) |
+| Hub Server / Hub Client / 通道数据流 | [架构.md](架构.md) |
+| 通道凭证 / ASR / TTS / token / launchd env | [配置.md](配置.md) |
+| 安装、升级、运行时复制关系 | [部署.md](部署.md) |
+| `~/.forge-hub/` 下的状态文件和 schema | [运行时状态.md](运行时状态.md) |
+| 新通道插件 | [hub-docs/channel-plugin-guide.md](hub-docs/channel-plugin-guide.md) |
+| 安全边界 / 漏洞报告 | [SECURITY.md](SECURITY.md) |
+
+成熟度按 [维护地图.md](维护地图.md) 处理：`hub-server`、`hub-client`、`forge-cli`、`cli.ts`、`hub-test-harness` 是 stable core；`hub-dashboard` 已进入默认安装但仍在迭代；`hub-app` 是 preview；`forge-engine` 是 experimental / manual setup。
+
+## 改动验证
+
+按影响范围跑最小验证；不确定时跑更大的集合。
+
+| 改动范围 | 建议验证 |
+|----------|----------|
+| `hub-server/` 路由、审批、allowlist、lock、history | `(cd hub-server && bun install && bunx tsc --noEmit && bun test)` + `bun hub-test-harness/harness.ts` |
+| 远程审批主流程 / 第二道防线 / harness 相关 | 上一行 + `fh hub self-test` |
+| `hub-client/` | `(cd hub-client && bun install && bunx tsc --noEmit)`；涉及实际 channel 行为时手动跑 Claude Code channel |
+| `forge-cli/` | `(cd forge-cli && bun test)` |
+| `cli.ts` / install / uninstall / doctor | `bun cli.ts doctor`；涉及部署副作用时用临时 HOME 或明确手工记录 |
+| `forge-engine/` | `(cd forge-engine && bun install && bunx tsc --noEmit && bun test)` |
+| `hub-dashboard/` | `(cd hub-dashboard && bun install && bun run lint && bun run build)` |
+| 新通道插件 | 插件手工记录：授权入站、未授权拦截、出站成功、stop 清理；能接 harness 的尽量接 |
+| 文档-only | `git -c core.quotepath=false status --short --untracked-files=all` 确认只列文档；命令和链接要能对应到当前 repo |
+
+全量本地验证参考：
 
 ```bash
-bun test
+(cd hub-server && bun install && bunx tsc --noEmit && bun test)
+(cd hub-client && bun install && bunx tsc --noEmit)
+(cd forge-cli && bun test)
+(cd forge-engine && bun install && bunx tsc --noEmit && bun test)
+(cd hub-dashboard && bun install && bun run lint && bun run build)
 bun hub-test-harness/harness.ts
-(cd hub-server && ../hub-dashboard/node_modules/.bin/tsc -p tsconfig.json --noEmit)
-(cd hub-client && ../hub-dashboard/node_modules/.bin/tsc -p tsconfig.json --noEmit)
-(cd forge-engine && ../hub-dashboard/node_modules/.bin/tsc -p tsconfig.json --noEmit)
-(cd hub-dashboard && bun run lint && bun run build)
 fh hub self-test
 ```
 
@@ -45,7 +77,7 @@ GitHub Issues。请带：
 - 在 `start()` 里调 hub.pushMessage(...) 把入站消息推给 Hub
 - 在 `send()` 里把 hub 出站消息发到外部平台
 
-写完丢到 `hub-server/channels/` 下任一 `.ts` 文件即可——Hub 启动时自动 hot load。
+写完丢到 `hub-server/channels/` 下任一 `.ts` 文件即可——Hub 启动时会自动加载。生产模式默认不热加载；开发时用 `FORGE_HUB_DEV=1 bun hub-server/hub.ts` 才会监听文件变化。
 
 ## Code 改动
 

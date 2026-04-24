@@ -16,7 +16,7 @@
 
 Forge Hub 是 Claude Code 和外部 IM 平台之间的通信总线。它把"和外部平台通信"抽成一个叫 **channel plugin** 的扩展点——一个 `.ts` 文件丢进 `hub-server/channels/` 就自动加载，变成一个新通道。
 
-已有的四个通道（`wechat` / `telegram` / `feishu` / `imessage`）都是这个接口的实现，没有特权。你写的 Discord 通道和它们平级。
+已有通道（`wechat` / `telegram` / `feishu` / `imessage` / `homeland`）都是这个接口的实现，没有特权。你写的 Discord 通道和它们平级。
 
 **你的插件要做两件事**：
 
@@ -181,7 +181,7 @@ if (!isAllowed(senderId)) {
 三点必做：
 
 1. **`fromId` 用字面量 `"system"`**。Hub `onMessageImpl` 看到非 allowlist fromId 会 logError + 丢弃。`"system"` 是白名单豁免（`hub.ts` 里 `if (msg.fromId !== "system")` 分支）。
-2. **`content` 走 `hub.formatUnauthorizedNotice(displayName, senderId, rawContent)`**。它只生成拦截告警，不把未授权原文写进 agent 上下文。raw content 只允许留在 Hub log 的短摘要里，不能自己拼进 `pushMessage.content`。**签名只有 3 个参数**——channel name 由 HubAPI factory 从 closure 注入。
+2. **`content` 走 `hub.formatUnauthorizedNotice(displayName, senderId, rawContent)`**。它会把原文的 `\n` 替换成空格（防 prompt injection 逃出前缀）+ 截断 100 字符 + 包在 `<user_input>` tag 里。不要自己拼字符串。**签名只有 3 个参数**——channel name 由 HubAPI factory 从 closure 注入。
 3. **原消息丢弃**。不要 push 两条（告警 + 原文）——原文绝对不进 agent 上下文。
 
 ### 为什么这么严
@@ -345,7 +345,7 @@ Telegram 用 `chat.id`（1:1 对话里和 from.id 语义等价，见 `telegram.t
 ### 不要在 log / message 泄露 secret
 
 - `config.json` 里存的 `bot_token` / `api_key` 不要打印到 log。Telegram 有 `redactToken()` helper 专门 strip URL 里的 token 再 log 错误——借鉴这个模式。
-- 告警文案不要回显未授权原文；`formatUnauthorizedNotice` 当前只返回拦截说明，raw content 只进 Hub log。
+- 告警文案不要回显完整原文（`formatUnauthorizedNotice` 已截 100）。
 - 审计日志（`audit.jsonl`）由 Hub 写，你别自己写 secret 进 `raw`。
 
 ### 锁定暗号
@@ -423,4 +423,4 @@ curl -X POST http://localhost:8787/inbound \
 
 有疑问 → 提 issue。有改进建议 → 特别想听"这份指南哪里让你卡了 15 分钟"。
 
-> **君子不器**。这个接口存在是为了让 Hub 长到我们没想过的通道上。你写的通道不用像 4 个内置通道——能解决真实问题就好。
+> **君子不器**。这个接口存在是为了让 Hub 长到我们没想过的通道上。你写的通道不用像内置通道——能解决真实问题就好。
