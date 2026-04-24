@@ -217,7 +217,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
-  const [nativeAuthReady, setNativeAuthReady] = useState(false);
+  const [nativeAuthReady, setNativeAuthReady] = useState(() => !isNativeApp());
 
   const instances = useHubStore((s) => s.instances);
   const channelHealth = useHubStore((s) => s.channelHealth);
@@ -232,7 +232,6 @@ export default function App() {
   useEffect(() => {
     if (isNativeApp()) {
       setNativeApp(true);
-      setNativeAuthReady(false);
       bridge.getHubApiToken()
         .then((token) => {
           setDashboardBearerToken(token);
@@ -247,7 +246,7 @@ export default function App() {
       onSessionsUpdated((sessions) => setNativeSessions(sessions));
       initNativeBridgeHandlers();
     } else {
-      setNativeAuthReady(true);
+      setNativeApp(false);
     }
   }, [setNativeApp, setNativeSessions]);
 

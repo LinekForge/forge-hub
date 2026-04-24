@@ -1,7 +1,7 @@
 import React from "react";
 import { Avatar, IconSearch, IconMore, IconPaperclip, IconSparkle, IconSend } from "./icons";
 import { CHANNEL_ICON } from "./channel_icons";
-import { approveFromDashboard, denyFromDashboard, sendMessage } from "./api";
+import { approveFromDashboard, denyFromDashboard, fetchHistory, sendMessage } from "./api";
 import type { DesignAI, DesignChannel } from "./adapter";
 import { isNativeApp, bridge } from "./native-bridge";
 import { groupNativeSessions } from "./native-adapter";
@@ -23,13 +23,6 @@ interface ChatMessage {
   command?: string;
   risk?: "low" | "medium" | "high" | "unknown";
   request_id?: string;
-}
-
-interface HistoryItem {
-  ts: string;
-  direction: "in" | "out";
-  from: string;
-  text: string;
 }
 
 interface ChatModeProps {
@@ -571,7 +564,11 @@ function ChannelConfigDialog({ title, channels, preselected, onConfirm, onCancel
                 <input type="checkbox" checked={selected.has(ch.id)}
                   onChange={() => setSelected(prev => {
                     const next = new Set(prev);
-                    next.has(ch.id) ? next.delete(ch.id) : next.add(ch.id);
+                    if (next.has(ch.id)) {
+                      next.delete(ch.id);
+                    } else {
+                      next.add(ch.id);
+                    }
                     return next;
                   })}
                   style={{ accentColor: 'var(--indigo)' }}
@@ -1011,30 +1008,29 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
   const [localConvos, setLocalConvos] = React.useState<Record<string, ChatMessage[]>>({});
   const [source, setSource] = React.useState('jsonl');
   const [refreshTick, setRefreshTick] = React.useState(0);
-  const refreshSource = () => {
-    const key = `${activeId}::${source}`;
-    historyLoadedIds.delete(key);
-    setRefreshTick(t => t + 1);
-  };
   const convos = mergeConversations(conversations, localConvos);
   const ai = ais.find((entry) => entry.id === activeId);
+  const aiChannels = ai?.channels;
 
   const native = isNativeApp();
   const sources = React.useMemo(() => {
     const s: string[] = [];
     if (native) s.push('jsonl');
-    if (ai?.channels) {
-      for (const ch of ai.channels) s.push(ch);
+    if (aiChannels) {
+      for (const ch of aiChannels) s.push(ch);
     }
     if (s.length === 0) s.push('jsonl');
     return s;
-  }, [ai?.channels, native]);
+  }, [aiChannels, native]);
 
-  React.useEffect(() => {
-    if (!sources.includes(source)) setSource(sources[0]);
-  }, [sources, source]);
+  const activeSource = sources.includes(source) ? source : sources[0];
+  const refreshSource = () => {
+    const key = `${activeId}::${activeSource}`;
+    historyLoadedIds.delete(key);
+    setRefreshTick(t => t + 1);
+  };
 
-  const convoKey = `${activeId}::${source}`;
+  const convoKey = `${activeId}::${activeSource}`;
   const messages = convos[convoKey] || [];
 
   // 接收外部消息（SSE/polling 推送）
@@ -1053,12 +1049,12 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
 
   // 加载数据（切换联系人或通道时）
   React.useEffect(() => {
-    if (!activeId || !source) return;
-    const loadKey = `${activeId}::${source}`;
+    if (!activeId || !activeSource) return;
+    const loadKey = `${activeId}::${activeSource}`;
     if (historyLoadedIds.has(loadKey)) return;
     historyLoadedIds.add(loadKey);
 
-    if (source === 'jsonl' && native) {
+    if (activeSource === 'jsonl' && native) {
       bridge.getSessionHistory(activeId, 100).then(history => {
         const msgs: ChatMessage[] = history.map((h, i) => ({
           id: `jsonl-${i}`,
@@ -1068,26 +1064,23 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
         }));
         setLocalConvos(prev => ({ ...prev, [loadKey]: msgs }));
       }).catch(err => console.warn('[hub] jsonl 加载失败:', err));
-    } else if (source !== 'jsonl') {
+    } else if (activeSource !== 'jsonl') {
       (async () => {
         try {
-          const res = await fetch(`/api/history?channel=${source}&limit=50`);
-          if (!res.ok) return;
-          const data = await res.json() as { history?: HistoryItem[] };
-          const historyRows = data.history ?? [];
+          const historyRows = await fetchHistory(activeSource, 50) ?? [];
           if (historyRows.length > 0) {
             const msgs: ChatMessage[] = historyRows.map((h, i) => ({
-              id: `hist-${source}-${i}`,
+              id: `hist-${activeSource}-${i}`,
               dir: (h.direction === 'in' ? 'out' : 'in') as ChatMessage['dir'],
               text: h.text,
               time: new Date(h.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             }));
             setLocalConvos(prev => ({ ...prev, [loadKey]: msgs }));
           }
-        } catch (err) { console.warn(`[hub] 历史加载失败 (${source}):`, err); }
+        } catch (err) { console.warn(`[hub] 历史加载失败 (${activeSource}):`, err); }
       })();
     }
-  }, [activeId, source, native, ais, refreshTick]);
+  }, [activeId, activeSource, native, refreshTick]);
 
   const handleSend = (text: string) => {
     if (!ai?.isChannel) return;
@@ -1171,9 +1164,9 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
           onSearch={setSearch}
         />
         <ChatWindow ai={ai} messages={messages} onSend={handleSend} onApproval={handleApproval}
-          source={source} sources={sources} onSourceChange={setSource} onRefresh={refreshSource}/>
+          source={activeSource} sources={sources} onSourceChange={setSource} onRefresh={refreshSource}/>
         <Profile ai={ai} pending={pending} channels={channels}
-          activeSource={source} onSourceChange={setSource}/>
+          activeSource={activeSource} onSourceChange={setSource}/>
       </div>
     </>
   );

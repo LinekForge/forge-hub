@@ -58,7 +58,8 @@ function hasChanged(filePath: string): boolean {
 
 export function ensureDirs(): void {
   for (const dir of [DIR, SCHEDULE_DIR, STATE_DIR]) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(dir, 0o700); } catch { /* ignore unsupported chmod */ }
   }
 }
 

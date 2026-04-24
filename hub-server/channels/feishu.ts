@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { execFileText } from "../process-utils.js";
+import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ async function downloadFeishuMedia(
   if (!fileKey || !messageId) return null;
   try {
     await fs.promises.mkdir(FEISHU_MEDIA_DIR, { recursive: true });
-    const outputName = fileName ?? `${type}_${Date.now()}.${type === "image" ? "png" : "dat"}`;
+    const outputName = sanitizeMediaFileName(fileName ?? `${type}.${type === "image" ? "png" : "dat"}`);
     // lark-cli only accepts relative paths
     await execFileText(LARK_CLI, [
       "im", "+messages-resources-download",
@@ -98,6 +99,7 @@ async function downloadFeishuMedia(
       "--as", "bot",
     ], { timeout: 30000, cwd: FEISHU_MEDIA_DIR });
     const fullPath = join(FEISHU_MEDIA_DIR, outputName);
+    await assertRealPathInsideDir(FEISHU_MEDIA_DIR, fullPath);
     hub.log(`📎 下载: ${outputName}`);
     return fullPath;
   } catch (err) {

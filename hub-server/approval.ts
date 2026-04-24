@@ -156,25 +156,20 @@ export function startPendingTtlSweep(): void {
           // 必须通知 client：否则 client 的 MCP permission handler 无限挂起，Claude Code 卡死。
           // 这是 04-13 发现的 bug——原版只 delete map 不通知，client 永远等不到 response。
           // 发 behavior="deny" 让 CC 侧走现成的 deny 分支停下 tool call。
-          const instance = getInstances().get(p.from_instance);
-          if (instance) {
-            try {
-              instance.send({
-                type: "permission_response",
-                channel: "system",
-                from: "hub",
-                fromId: "hub",
-                content: JSON.stringify({ request_id: id, behavior: "deny" }),
-                targeted: true,
-                raw: {},
-              });
-              log(`⏰ 审批请求 ${id} 超时清理 + 已 deny 通知 ${p.from_instance} (tool=${p.tool_name})`);
-            } catch (sendErr) {
-              // 通知失败要 logError——client 会继续挂死，是真 bug 不是日常
-              logError(`审批 ${id} 超时通知 ${p.from_instance} 失败: ${String(sendErr)}`);
-            }
-          } else {
+          const delivery = sendPendingApprovalResponse(id, p, "deny", {
+            channel: "system",
+            from: "hub",
+            fromId: "hub",
+          });
+          if (delivery.ok) {
+            log(`⏰ 审批请求 ${id} 超时清理 + 已 deny 通知 ${p.from_instance} (tool=${p.tool_name})`);
+          } else if (delivery.reason === "offline") {
             log(`⏰ 审批请求 ${id} 超时清理 (tool=${p.tool_name}, instance=${p.from_instance} 已离线,无需通知)`);
+          } else {
+            // 实例还在线但发送没有被确认，不能删 pending；下一轮 sweep 再尝试，
+            // 否则 MCP permission handler 会继续挂起且用户无法重试。
+            logError(`审批 ${id} 超时 auto-deny 未送达 ${p.from_instance} (${delivery.reason})，pending 保持等待`);
+            continue;
           }
           appendAudit({
             action: "approval_timeout",
@@ -339,11 +334,49 @@ export type ResolveResult =
   | { ok: true; action: string }
   | { ok: false; error: string; status: number };
 
-function clearPendingApproval(requestId: string, pending: PendingPermission): void {
+export function clearPendingApproval(requestId: string, pending: PendingPermission): void {
   pendingPermissions.delete(requestId);
   idLookup.delete(pending.yes_id);
   idLookup.delete(pending.no_id);
   savePendingToDisk();
+}
+
+export type ApprovalDeliveryReason = "offline" | "dropped" | "backpressure";
+
+export type ApprovalDeliveryResult =
+  | { ok: true; sendStatus: number }
+  | { ok: false; reason: ApprovalDeliveryReason; sendStatus?: number };
+
+export function sendPendingApprovalResponse(
+  requestId: string,
+  pending: PendingPermission,
+  behavior: "allow" | "deny",
+  source: { channel: string; from: string; fromId: string },
+): ApprovalDeliveryResult {
+  const instance = getInstances().get(pending.from_instance);
+  if (!instance) {
+    return { ok: false, reason: "offline" };
+  }
+
+  const sendStatus = instance.send({
+    type: "permission_response",
+    channel: source.channel,
+    from: source.from,
+    fromId: source.fromId,
+    content: JSON.stringify({ request_id: requestId, behavior }),
+    targeted: true,
+    raw: {},
+  });
+
+  if (sendStatus <= 0) {
+    return {
+      ok: false,
+      reason: sendStatus === 0 ? "dropped" : "backpressure",
+      sendStatus,
+    };
+  }
+
+  return { ok: true, sendStatus };
 }
 
 export function resolveApprovalFromDashboard(
@@ -355,24 +388,17 @@ export function resolveApprovalFromDashboard(
     return { ok: false, error: "pending not found", status: 404 };
   }
 
-  const instance = getInstances().get(pending.from_instance);
-  if (!instance) {
-    log(`⚠️  Dashboard 审批 ${requestId} → ${behavior}，但实例 ${pending.from_instance} 已离线`);
-    return { ok: false, error: `instance ${pending.from_instance} is offline`, status: 409 };
-  }
-
-  const sendStatus = instance.send({
-    type: "permission_response",
+  const delivery = sendPendingApprovalResponse(requestId, pending, behavior, {
     channel: "homeland",
     from: "Operator",
     fromId: "local://operator",
-    content: JSON.stringify({ request_id: requestId, behavior }),
-    targeted: true,
-    raw: {},
   });
-  if (sendStatus <= 0) {
-    const reason = sendStatus === 0 ? "dropped" : "backpressure";
-    log(`⚠️  Dashboard 审批 ${requestId} → ${behavior} 发送未确认（${reason}），pending 保持等待`);
+  if (!delivery.ok && delivery.reason === "offline") {
+    log(`⚠️  Dashboard 审批 ${requestId} → ${behavior}，但实例 ${pending.from_instance} 已离线`);
+    return { ok: false, error: `instance ${pending.from_instance} is offline`, status: 409 };
+  }
+  if (!delivery.ok) {
+    log(`⚠️  Dashboard 审批 ${requestId} → ${behavior} 发送未确认（${delivery.reason}），pending 保持等待`);
     return { ok: false, error: `failed to deliver approval to ${pending.from_instance}`, status: 503 };
   }
 

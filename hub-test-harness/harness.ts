@@ -43,6 +43,7 @@ const TEST_INSTANCE = "test-self-e2e-instance";
 interface TestHub {
   tmpDir: string;
   child: ChildProcess;
+  instanceSocket: WebSocket;
 }
 
 async function startTestHub(): Promise<TestHub> {
@@ -115,7 +116,10 @@ async function startTestHub(): Promise<TestHub> {
   if (!hubUp) throw new Error(`test Hub 未在 15s 内启动 (port ${TEST_HUB_PORT})`);
   if (!injectorUp) throw new Error(`test injector 未在 15s 内启动 (socket ${INJECTOR_SOCKET})`);
 
-  return { tmpDir, child };
+  const instanceSocket = await connectTestInstance();
+  await sleep(50);
+
+  return { tmpDir, child, instanceSocket };
 }
 
 // 走 Unix socket 发 HTTP 请求——Bun fetch 原生支持 `unix` option
@@ -128,7 +132,28 @@ async function injectorFetch(pathname: string, body: unknown): Promise<Response>
   } as any);
 }
 
+async function connectTestInstance(): Promise<WebSocket> {
+  return await new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${TEST_HUB_PORT}/ws?instance=${encodeURIComponent(TEST_INSTANCE)}`);
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(new Error(`test instance WebSocket 未在 5s 内连接 (${TEST_INSTANCE})`));
+    }, 5_000);
+
+    ws.addEventListener("open", () => {
+      clearTimeout(timer);
+      ws.send(JSON.stringify({ type: "ready", channels: ["wechat"] }));
+      resolve(ws);
+    }, { once: true });
+    ws.addEventListener("error", () => {
+      clearTimeout(timer);
+      reject(new Error(`test instance WebSocket 连接失败 (${TEST_INSTANCE})`));
+    }, { once: true });
+  });
+}
+
 async function stopTestHub(hub: TestHub): Promise<void> {
+  try { hub.instanceSocket.close(); } catch {}
   if (!hub.child.killed) {
     hub.child.kill("SIGTERM");
     // 给它 2s graceful shutdown

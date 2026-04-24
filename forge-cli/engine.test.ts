@@ -27,6 +27,15 @@ afterEach(() => {
 });
 
 describe("engine CLI helpers", () => {
+  test("uses the Forge Engine runtime data directory by default", () => {
+    const home = "/Users/example";
+    const paths = getEnginePaths(home);
+
+    expect(paths.engineDir).toBe("/Users/example/.forge-hub/engine-data");
+    expect(paths.engineScheduleDir).toBe("/Users/example/.forge-hub/engine-data/engine.d");
+    expect(paths.engineConfigFile).toBe("/Users/example/.forge-hub/engine-data/engine-config.json");
+  });
+
   test("lists schedules with readable tags", () => {
     const home = mkTempDir("forge-engine-cli-");
     const { engineScheduleDir } = getEnginePaths(home);

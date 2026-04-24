@@ -150,8 +150,10 @@ async function rotateIfNeeded(incomingBytes: number): Promise<void> {
 // ── Ensure Directories ──────────────────────────────────────────────────────
 
 export function ensureDirs(): void {
-  fs.mkdirSync(HUB_DIR, { recursive: true });
-  fs.mkdirSync(STATE_DIR, { recursive: true });
+  for (const dir of [HUB_DIR, STATE_DIR]) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(dir, 0o700); } catch { /* ignore unsupported chmod */ }
+  }
 }
 
 // ── PID Management ──────────────────────────────────────────────────────────

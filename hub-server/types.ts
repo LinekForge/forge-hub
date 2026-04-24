@@ -215,6 +215,7 @@ export type InboundHandleReason =
   | "approval_malformed"
   | "invalid_permission_id"
   | "approval_instance_offline"
+  | "approval_delivery_failed"
   | "locked"
   | "no_online_instance"
   | "no_subscribed_instance"

@@ -14,6 +14,7 @@ const {
   resolveApprovalFromDashboard,
   resolveApprovalRecipient,
   isApprovalOwner,
+  sendPendingApprovalResponse,
 } = await import("./approval.js");
 const { getInstances } = await import("./instance-manager.js");
 const { saveChannelState } = await import("./state.js");
@@ -170,5 +171,36 @@ describe("resolveApprovalFromDashboard", () => {
     expect(pendingPermissions.has(pending.request_id)).toBe(false);
     expect(idLookup.has(pending.yes_id)).toBe(false);
     expect(idLookup.has(pending.no_id)).toBe(false);
+  });
+});
+
+describe("sendPendingApprovalResponse", () => {
+  test("reports offline instances without mutating pending state", () => {
+    const pending = makePending("rq-offline");
+    pendingPermissions.set(pending.request_id, pending);
+
+    const result = sendPendingApprovalResponse(pending.request_id, pending, "allow", {
+      channel: "wechat",
+      from: "Owner",
+      fromId: "owner-1",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "offline" });
+    expect(pendingPermissions.has(pending.request_id)).toBe(true);
+  });
+
+  test("reports dropped delivery so callers can keep pending state", () => {
+    const pending = makePending("rq-dropped");
+    pendingPermissions.set(pending.request_id, pending);
+    getInstances().set("instance-1", makeInstance("instance-1", 0));
+
+    const result = sendPendingApprovalResponse(pending.request_id, pending, "deny", {
+      channel: "wechat",
+      from: "Owner",
+      fromId: "owner-1",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "dropped", sendStatus: 0 });
+    expect(pendingPermissions.has(pending.request_id)).toBe(true);
   });
 });

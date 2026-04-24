@@ -1,4 +1,4 @@
-import type { OverviewData } from "./types";
+import type { HistoryItem, OverviewData } from "./types";
 
 const BASE = (() => {
   if (typeof window === "undefined") return "/api";
@@ -77,6 +77,12 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
 
 export async function fetchOverview(): Promise<OverviewData | null> {
   return get("/overview");
+}
+
+export async function fetchHistory(channel: string, limit = 50): Promise<HistoryItem[] | null> {
+  const params = new URLSearchParams({ channel, limit: String(limit) });
+  const data = await get<{ history?: HistoryItem[] }>(`/history?${params.toString()}`);
+  return data?.history ?? null;
 }
 
 export async function fetchHealthFallback(): Promise<OverviewData | null> {

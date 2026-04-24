@@ -50,9 +50,16 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
 
         case "openSession":
             if let sid = params["sid"] as? String {
-                openSession(sid)
+                if isValidSessionId(sid) {
+                    openSession(sid)
+                    respond(callbackId, result: true)
+                } else {
+                    os_log("Bridge: rejected invalid session id '%{public}@'", log: log, type: .error, sid)
+                    respond(callbackId, result: false)
+                }
+            } else {
+                respond(callbackId, result: false)
             }
-            respond(callbackId, result: true)
 
         case "focusTerminal":
             if let sid = params["sid"] as? String,
@@ -113,6 +120,11 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
 
         case "resumeChannelSession":
             if let sid = params["sid"] as? String {
+                guard isValidSessionId(sid) else {
+                    os_log("Bridge: rejected invalid session id '%{public}@'", log: log, type: .error, sid)
+                    respond(callbackId, result: false)
+                    return
+                }
                 let channels = params["channels"] as? [String] ?? []
                 let tag = params["tag"] as? String ?? ""
                 let desc = params["description"] as? String ?? ""
@@ -122,8 +134,10 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
                     channels: channels, history: history, isChannel: true
                 )
                 terminal.openTerminal("cd ~ && claude --resume \(sid) --dangerously-load-development-channels \(developmentChannelArgs())")
+                respond(callbackId, result: true)
+            } else {
+                respond(callbackId, result: false)
             }
-            respond(callbackId, result: true)
 
         case "fetchHubChannels":
             let channels = hubClient.fetchHubChannels()
@@ -162,10 +176,15 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
             return
 
         case "sendFile":
-            if let filePath = params["filePath"] as? String, !filePath.isEmpty {
-                respond(callbackId, result: filePath)
+            if let sid = params["sid"] as? String,
+               isValidSessionId(sid),
+               let filePath = params["filePath"] as? String,
+               !filePath.isEmpty,
+               let pid = scanner.sessionPIDMap[sid] {
+                let instanceId = "\(hubClient.instancePrefix)\(pid)"
+                respond(callbackId, result: hubClient.sendFile(instanceId: instanceId, filePath: filePath))
             } else {
-                respond(callbackId, result: "")
+                respond(callbackId, result: false)
             }
 
         case "getSessionHistory":
@@ -234,7 +253,7 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
 
     private func isEngineRegistered() -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let engineDir = home.appendingPathComponent(".claude/channels/engine")
+        let engineDir = home.appendingPathComponent(".forge-hub/engine-data")
         var isDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: engineDir.path, isDirectory: &isDir), isDir.boolValue {
             return true
@@ -373,6 +392,10 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
     // MARK: - Session Actions
 
     private func openSession(_ sid: String) {
+        guard isValidSessionId(sid) else {
+            os_log("Bridge: rejected invalid session id '%{public}@'", log: log, type: .error, sid)
+            return
+        }
         if let pid = scanner.sessionPIDMap[sid],
            terminal.focusTerminalWindow(forPID: pid) { return }
 
@@ -382,6 +405,10 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
             hubClient.writeSessionFile(tag: "", description: desc, channels: [], history: [:])
         }
         terminal.openTerminal("cd ~ && claude --resume \(sid)")
+    }
+
+    private func isValidSessionId(_ sid: String) -> Bool {
+        return sid.range(of: "^[0-9a-f-]+$", options: .regularExpression) != nil
     }
 
     // MARK: - Callback Helpers

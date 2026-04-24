@@ -7,15 +7,26 @@
 ```bash
 git clone https://github.com/LinekForge/forge-hub.git
 cd forge-hub
-bun install                     # 顶层 workspace
-(cd hub-server && bun install)  # server deps
-(cd hub-client && bun install)  # MCP client deps
+(cd hub-server && bun install)
+(cd hub-client && bun install)
+(cd forge-engine && bun install)
+(cd hub-dashboard && bun install)
 bun cli.ts doctor               # 自检（看缺什么依赖 / 凭证 / plist）
 bun hub-test-harness/harness.ts # 直接跑 8 场景 harness
 fh hub self-test                # 走对外 CLI 包装再跑一遍
 ```
 
-改动后必须跑 `bun hub-test-harness/harness.ts` 和 `fh hub self-test` 再提 PR。
+改动后按影响范围跑：
+
+```bash
+bun test
+bun hub-test-harness/harness.ts
+(cd hub-server && ../hub-dashboard/node_modules/.bin/tsc -p tsconfig.json --noEmit)
+(cd hub-client && ../hub-dashboard/node_modules/.bin/tsc -p tsconfig.json --noEmit)
+(cd forge-engine && ../hub-dashboard/node_modules/.bin/tsc -p tsconfig.json --noEmit)
+(cd hub-dashboard && bun run lint && bun run build)
+fh hub self-test
+```
 
 ## 报 Bug / 提需求
 

@@ -50,6 +50,8 @@ import {
   startPendingTtlSweep,
   isApprovalOwner,
   sendApprovalAck,
+  clearPendingApproval,
+  sendPendingApprovalResponse,
 } from "./approval.js";
 import { getAuthSenderId, isAuthorizedSenderMatch } from "./message-auth.js";
 
@@ -129,7 +131,7 @@ function onMessageImpl(msg: InboundMessage): InboundHandleResult {
 
   // ── 第二道防线：未授权消息进到 onMessage 意味着通道层第一道过滤失效 ─────────
   // 这里校验"是否在 allowlist"，而不是"是否审批主人"。这样 approval authority
-  // 可以单独收紧到 allowed[0]，普通聊天仍保持 allowlist 语义。
+  // 可以单独收紧到显式 approval_owner_id，普通聊天仍保持 allowlist 语义。
   // 行为：logError 留痕 + push 一条抗 injection 的 system 告警让Forge 察觉 + 丢弃原消息不路由。
   // fromId = "system" 的消息（通道层自己 push 的告警）跳过此 check 避免递归/误伤。
   if (msg.fromId !== "system") {
@@ -321,16 +323,49 @@ function onMessageImpl(msg: InboundMessage): InboundHandleResult {
         };
       }
 
-      // 清理：pending map + 两条 idLookup（yes_id 和 no_id）
-      pendingPermissions.delete(requestId);
-      idLookup.delete(pending.yes_id);
-      idLookup.delete(pending.no_id);
-      savePendingToDisk();
       appendHistory(msg.channel, "in", msg.from, `[审批 ${requestId}] ${verdict}`);
       recordInbound(msg.channel);
 
-      const instance = getInstances().get(pending.from_instance);
-      // 审计不依赖 instance 是否在线——用户的决策已下达就要审计
+      const delivery = sendPendingApprovalResponse(requestId, pending, verdict, {
+        channel: msg.channel,
+        from: msg.from,
+        fromId: msg.fromId,
+      });
+      if (!delivery.ok) {
+        const detail = delivery.reason === "offline"
+          ? `会话 ${pending.from_instance} 已离线`
+          : `会话 ${pending.from_instance} 暂时未确认投递（${delivery.reason}）`;
+        log(`⚠️  审批 ${requestId} → ${verdict} 未送达：${detail}，pending 保持等待`);
+        appendAudit({
+          action: "approval_delivery_failed",
+          request_id: requestId,
+          display_id: displayId,
+          requested_behavior: verdict,
+          tool_name: pending.tool_name,
+          description: pending.description,
+          from_instance: pending.from_instance,
+          instance_online: delivery.reason !== "offline",
+          delivery_reason: delivery.reason,
+          send_status: delivery.sendStatus,
+          reply_channel: msg.channel,
+          reply_from: msg.from,
+          waited_seconds: Math.round((Date.now() - pending.created_at) / 1000),
+        });
+        void sendApprovalAck(
+          msg.channel,
+          msg.fromId,
+          `⚠️ ${verdict === "allow" ? "批准" : "拒绝"}未送达\n` +
+            `${pending.tool_name} 所在${detail}。\n` +
+            `审批仍在等待，请稍后重试 ${verdict === "allow" ? "yes" : "no"} ${displayId}`,
+        );
+        return {
+          accepted: true,
+          reason: delivery.reason === "offline" ? "approval_instance_offline" : "approval_delivery_failed",
+          detail,
+        };
+      }
+
+      clearPendingApproval(requestId, pending);
       appendAudit({
         action: verdict === "allow" ? "approval_granted" : "approval_denied",
         request_id: requestId,
@@ -338,32 +373,10 @@ function onMessageImpl(msg: InboundMessage): InboundHandleResult {
         tool_name: pending.tool_name,
         description: pending.description,
         from_instance: pending.from_instance,
-        instance_online: Boolean(instance),
+        instance_online: true,
         reply_channel: msg.channel,
         reply_from: msg.from,
         waited_seconds: Math.round((Date.now() - pending.created_at) / 1000),
-      });
-      if (!instance) {
-        log(`⚠️  审批 ${requestId} 的发起实例 ${pending.from_instance} 已离线，丢弃回复（已审计）`);
-        void sendApprovalAck(
-          msg.channel,
-          msg.fromId,
-          `⚠️ ${verdict === "allow" ? "批准" : "拒绝"}已记录，但 ${pending.tool_name} 所在会话已离线，无法送达`,
-        );
-        return {
-          accepted: true,
-          reason: "approval_instance_offline",
-          detail: pending.from_instance,
-        };
-      }
-      instance.send({
-        type: "permission_response",
-        channel: msg.channel,
-        from: msg.from,
-        fromId: msg.fromId,
-        content: JSON.stringify({ request_id: requestId, behavior: verdict }),
-        targeted: true,
-        raw: {},
       });
       log(`✅ 审批 ${requestId} → ${verdict} via id=${displayId} (from ${msg.channel}:${msg.from} → ${pending.from_instance})`);
       // 成功 ack：用户能看到"Hub 确认已生效"，而不是盲信

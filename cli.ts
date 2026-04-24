@@ -60,6 +60,18 @@ function installCmd(): void {
   // redteam r2 M1: mkdirSync 带 mode 0o700，缩小 mkdir 默认 0o755 到 chmod
   // 0o700 之间的窗口（attacker 可在此毫秒级窗口写 api-token symlink 预埋）。
   fs.mkdirSync(CHANNELS_RUNTIME, { recursive: true, mode: 0o700 });
+  cleanDirContents(HUB_DIR, new Set([
+    "state",
+    "hub-config.json",
+    "api-token",
+    "hub.log",
+    "hub-stderr.log",
+    "hub.pid",
+    "package",
+    "sendable",
+    ".DS_Store",
+  ]));
+  cleanDirContents(CHANNELS_RUNTIME);
   const serverSrc = path.join(packageRoot, "hub-server");
   cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"]);
   cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
@@ -75,6 +87,7 @@ function installCmd(): void {
   log(`✓ hub-server 部署到 ${HUB_DIR} (chmod 700)`);
 
   // 3. Install hub-client
+  fs.rmSync(HUB_CLIENT_RUNTIME, { recursive: true, force: true });
   fs.mkdirSync(HUB_CLIENT_RUNTIME, { recursive: true });
   const clientSrc = path.join(packageRoot, "hub-client");
   cpDir(clientSrc, HUB_CLIENT_RUNTIME, [".ts", ".json", ".lock", ".mcp.json"]);
@@ -82,6 +95,7 @@ function installCmd(): void {
 
   // 3.5 Install dashboard source so Hub can serve a built dist at runtime
   const dashboardSrc = path.join(packageRoot, "hub-dashboard");
+  fs.rmSync(HUB_DASHBOARD_RUNTIME, { recursive: true, force: true });
   copyFilteredTree(dashboardSrc, HUB_DASHBOARD_RUNTIME, [".ts", ".tsx", ".js", ".json", ".css", ".html", ".svg", ".lock", ".md"]);
   log(`✓ hub-dashboard 源码部署到 ${HUB_DASHBOARD_RUNTIME}`);
 
@@ -305,8 +319,11 @@ function uninstallCmd(): void {
   }
 
   // 取消 MCP 注册
-  unregisterMcp();
-  log("✓ MCP server 已从 ~/.claude.json 取消注册");
+  if (unregisterMcp()) {
+    log("✓ MCP server 已从 ~/.claude.json 取消注册");
+  } else {
+    log("ℹ️  未删除 ~/.claude.json 的 mcpServers.hub（不存在或不属于当前 forge-hub runtime）");
+  }
 
   log("\n✅ Uninstall 完成。state（~/.forge-hub/state/）保留，重装会复用。");
 }
@@ -380,6 +397,14 @@ function cpDir(src: string, dst: string, exts: string[]): void {
     if (stat.isFile() && exts.some((e) => f.endsWith(e))) {
       fs.copyFileSync(sp, dp);
     }
+  }
+}
+
+function cleanDirContents(dir: string, preserve = new Set<string>()): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir)) {
+    if (preserve.has(entry)) continue;
+    fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
   }
 }
 
@@ -558,12 +583,27 @@ function syncApiTokenFile(): void {
   }
 }
 
-function unregisterMcp(): void {
+function unregisterMcp(): boolean {
   const data = readClaudeJson();
   const mcpServers = (data.mcpServers ?? {}) as Record<string, unknown>;
+  const existing = mcpServers.hub as { command?: unknown; args?: unknown[] } | undefined;
+  if (!existing) return false;
+
+  const expectedArg = path.join(HUB_CLIENT_RUNTIME, "hub-channel.ts");
+  const existingArg0 = Array.isArray(existing.args) ? String(existing.args[0] ?? "") : "";
+  if (existingArg0 !== expectedArg) {
+    console.warn(
+      `⚠️  保留 mcpServers.hub：它不指向当前 forge-hub runtime。\n` +
+      `   现有 args[0]: ${existingArg0 || "(缺失)"}\n` +
+      `   预期 args[0]: ${expectedArg}`,
+    );
+    return false;
+  }
+
   delete mcpServers.hub;
   data.mcpServers = mcpServers;
   writeClaudeJson(data);
+  return true;
 }
 
 function isMcpRegistered(): boolean {

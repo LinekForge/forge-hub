@@ -33,6 +33,13 @@ export interface Message {
   fanoutResults?: { channel: string; ok: boolean; error?: string }[];
 }
 
+export interface HistoryItem {
+  ts: string;
+  direction: "in" | "out";
+  from: string;
+  text: string;
+}
+
 export interface PendingApproval {
   request_id: string;
   yes_id: string;

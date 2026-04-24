@@ -9,6 +9,7 @@ import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import fsMod from "node:fs";
 import pathMod from "node:path";
+import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
 
 // ── Module State ────────────────────────────────────────────────────────────
 
@@ -104,9 +105,11 @@ async function downloadTgFile(fileId: string, fileName: string): Promise<string 
     const res = await fetch(url, (PROXY_URL ? { proxy: PROXY_URL } : {}) as any);
     if (!res.ok) return null;
     await fsMod.promises.mkdir(TG_MEDIA_DIR, { recursive: true });
-    const filePath = pathMod.join(TG_MEDIA_DIR, fileName);
+    const safeName = sanitizeMediaFileName(fileName);
+    const filePath = pathMod.join(TG_MEDIA_DIR, safeName);
     await fsMod.promises.writeFile(filePath, Buffer.from(await res.arrayBuffer()));
-    hub.log(`📎 下载: ${fileName}`);
+    await assertRealPathInsideDir(TG_MEDIA_DIR, filePath);
+    hub.log(`📎 下载: ${safeName}`);
     return filePath;
   } catch (err) {
     hub.logError(`媒体下载失败: ${redactToken(String(err))}`);
@@ -253,7 +256,7 @@ async function startPolling(): Promise<void> {
           const filePath = await downloadTgFile(msg.photo[msg.photo.length - 1].file_id, `photo_${Date.now()}.jpg`);
           content = filePath ? `${msg.caption ?? "[图片]"}\n[图片] ${filePath}` : msg.caption ?? "[图片]";
         } else if (msg.document) {
-          const fileName = msg.document.file_name ?? `file_${Date.now()}`;
+          const fileName = msg.document.file_name ?? "file";
           const filePath = await downloadTgFile(msg.document.file_id, fileName);
           content = filePath ? `${msg.caption ?? ""}\n[文件] ${filePath}`.trim() : msg.caption ?? `[文件: ${fileName}]`;
         } else if (msg.voice) {

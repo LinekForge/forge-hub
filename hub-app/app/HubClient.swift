@@ -312,20 +312,37 @@ class HubClient {
         }
     }
 
-    func sendFile(instanceId: String, filePath: String) {
+    func sendFile(instanceId: String, filePath: String) -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let sendableDir = home.appendingPathComponent(".forge-hub/sendable")
-        try? FileManager.default.createDirectory(at: sendableDir, withIntermediateDirectories: true)
-        let fileName = (filePath as NSString).lastPathComponent
-        let sandboxedPath = sendableDir.appendingPathComponent(fileName)
-        try? FileManager.default.copyItem(
-            at: URL(fileURLWithPath: filePath),
-            to: sandboxedPath
-        )
+        do {
+            try FileManager.default.createDirectory(at: sendableDir, withIntermediateDirectories: true)
+        } catch {
+            os_log("sendFile create sendable dir failed: %{public}@", log: log, type: .error, error.localizedDescription)
+            return false
+        }
+        let fileName = URL(fileURLWithPath: filePath).lastPathComponent
+        let safeName = fileName.unicodeScalars.map { scalar -> String in
+            if CharacterSet.controlCharacters.contains(scalar) || scalar.value == 47 || scalar.value == 92 {
+                return "_"
+            }
+            return String(scalar)
+        }.joined()
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let sandboxedPath = sendableDir.appendingPathComponent("\(timestamp)-\(safeName.isEmpty ? "file" : safeName)")
+        do {
+            try FileManager.default.copyItem(
+                at: URL(fileURLWithPath: filePath),
+                to: sandboxedPath
+            )
+        } catch {
+            os_log("sendFile copy failed: %{public}@", log: log, type: .error, error.localizedDescription)
+            return false
+        }
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        let body: [String: Any] = ["channel": "homeland", "to": "local://operator", "path": sandboxedPath.path]
+        let body: [String: Any] = ["channel": "homeland", "to": "local://operator", "path": sandboxedPath.path, "instance": instanceId]
         let json = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
         task.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/send-file",
                                    "-H", "Content-Type: application/json",
@@ -334,18 +351,21 @@ class HubClient {
         task.standardError = FileHandle.nullDevice
         do { try task.run(); task.waitUntilExit() } catch {
             os_log("sendFile failed: %{public}@", log: log, type: .error, error.localizedDescription)
+            return false
         }
+        if task.terminationStatus != 0 { return false }
 
         let msgTask = Process()
         msgTask.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        let msgBody: [String: Any] = ["content": "[文件] \(sandboxedPath.path)"]
+        let msgBody: [String: Any] = ["content": "[文件] \(sandboxedPath.path)", "instance": instanceId]
         let msgJson = (try? JSONSerialization.data(withJSONObject: msgBody)) ?? Data()
         msgTask.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/homeland/send",
                                       "-H", "Content-Type: application/json",
                                       "-d", String(data: msgJson, encoding: .utf8) ?? "{}"])
         msgTask.standardOutput = FileHandle.nullDevice
         msgTask.standardError = FileHandle.nullDevice
-        do { try msgTask.run() } catch {}
+        do { try msgTask.run(); msgTask.waitUntilExit() } catch { return false }
+        return msgTask.terminationStatus == 0
     }
 
     /// 同步更新 identities 文件的 offline 副本。API 成功后调——保证 Hub 重启后状态不丢。

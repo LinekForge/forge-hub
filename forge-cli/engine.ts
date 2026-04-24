@@ -21,8 +21,11 @@ export interface EngineMatch {
   time: string;
 }
 
-export function getEnginePaths(home = process.env.HOME ?? "~"): EnginePaths {
-  const engineDir = path.join(home, ".claude", "channels", "engine");
+export function getEnginePaths(
+  home = process.env.HOME ?? "~",
+  dataDir = process.env.FORGE_ENGINE_DATA,
+): EnginePaths {
+  const engineDir = dataDir ?? path.join(home, ".forge-hub", "engine-data");
   return {
     engineDir,
     engineScheduleDir: path.join(engineDir, "engine.d"),

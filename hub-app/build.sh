@@ -58,10 +58,6 @@ swiftc \
 xattr -cr "$APP" 2>/dev/null || true
 codesign --force --deep --sign - "$APP"
 
-# 8. Deploy scan-sessions.py
-mkdir -p "$HOME/.claude/自动化/scripts"
-cp "$SCRIPT_DIR/shared/scan-sessions.py" "$HOME/.claude/自动化/scripts/" 2>/dev/null || true
-
 echo "  ✓ $APP_NAME.app"
 echo ""
 echo "=== 完成 ==="

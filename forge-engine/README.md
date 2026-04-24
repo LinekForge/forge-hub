@@ -39,7 +39,7 @@ cd forge-engine
 bun install
 ```
 
-1. 创建配置 `~/.claude/channels/engine/engine-config.json`：
+1. 创建配置 `~/.forge-hub/engine-data/engine-config.json`：
 ```json
 {
   "enabled": true,
@@ -48,7 +48,7 @@ bun install
 }
 ```
 
-2. 创建 schedule `~/.claude/channels/engine/engine.d/heartbeat.json`：
+2. 创建 schedule `~/.forge-hub/engine-data/engine.d/heartbeat.json`：
 ```json
 {
   "schedules": [
