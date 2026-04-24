@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { STATE_DIR, logError } from "./config.js";
+import { getStateDir, logError } from "./config.js";
 import type { AllowEntry, Allowlist } from "./types.js";
 import { isAuthorizedSenderMatch } from "./message-auth.js";
 
@@ -42,7 +42,7 @@ function invalidateChannelState(channel: string, key?: string): void {
 function ensureChannelWatcher(channel: string): boolean {
   if (channelWatchers.has(channel)) return true;
 
-  const dir = path.join(STATE_DIR, channel);
+  const dir = path.join(getStateDir(), channel);
   if (!fs.existsSync(dir)) return false;
 
   try {
@@ -73,7 +73,7 @@ function readChannelStateInternal(channel: string, key: string): StateReadResult
   const cached = stateCache.get(cacheKey(channel, key));
   if (cached) return { status: "ok", value: cloneState(cached.value) };
 
-  const filePath = path.join(STATE_DIR, channel, `${key}.json`);
+  const filePath = path.join(getStateDir(), channel, `${key}.json`);
   try {
     if (!fs.existsSync(filePath)) return { status: "missing", filePath };
 
@@ -97,7 +97,7 @@ export function loadChannelState(channel: string, key: string): unknown {
 }
 
 export function saveChannelState(channel: string, key: string, value: unknown): void {
-  const dir = path.join(STATE_DIR, channel);
+  const dir = path.join(getStateDir(), channel);
   const filePath = path.join(dir, `${key}.json`);
   const tmp = `${filePath}.tmp.${process.pid}`;
   try {

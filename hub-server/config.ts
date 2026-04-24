@@ -38,13 +38,27 @@ export const HUB_VERSION = "0.2.0";
 
 // HUB_DIR：Hub 的状态 + 日志根目录。
 // 默认 ~/.forge-hub，可通过 FORGE_HUB_DIR 环境变量覆盖——给开源用户 / 多实例部署 / 测试隔离用。
-export const HUB_DIR = process.env.FORGE_HUB_DIR || path.join(process.env.HOME || "~", ".forge-hub");
-export const CONFIG_FILE = path.join(HUB_DIR, "hub-config.json");
-export const STATE_DIR = path.join(HUB_DIR, "state");
-export const LOG_FILE = path.join(HUB_DIR, "hub.log");
-export const AUDIT_FILE = path.join(HUB_DIR, "audit.jsonl");
-export const PID_FILE = path.join(HUB_DIR, "hub.pid");
-export const LOCK_FILE = path.join(HUB_DIR, "lock.json");
+// 所有路径用函数而非常量——确保测试在任何时间点设 env 都能拿到正确的值。
+// 模块级常量在 import 时就定死了，bun test 多文件并行时模块缓存导致 env 时序不可控。
+export function getHubDir(): string { return process.env.FORGE_HUB_DIR || path.join(process.env.HOME || "~", ".forge-hub"); }
+export function getConfigFile(): string { return path.join(getHubDir(), "hub-config.json"); }
+export function getStateDir(): string { return path.join(getHubDir(), "state"); }
+export function getLogFile(): string { return path.join(getHubDir(), "hub.log"); }
+export function getAuditFile(): string { return path.join(getHubDir(), "audit.jsonl"); }
+export function getPidFile(): string { return path.join(getHubDir(), "hub.pid"); }
+export function getLockFile(): string { return path.join(getHubDir(), "lock.json"); }
+export function getApiTokenFile(): string { return path.join(getHubDir(), "api-token"); }
+
+// 向后兼容——生产代码启动时读一次缓存，避免热路径反复拼字符串
+export const HUB_DIR = getHubDir();
+export const CONFIG_FILE = getConfigFile();
+export const STATE_DIR = getStateDir();
+export const LOG_FILE = getLogFile();
+export const AUDIT_FILE = getAuditFile();
+export const PID_FILE = getPidFile();
+export const LOCK_FILE = getLockFile();
+export const API_TOKEN_FILE = getApiTokenFile();
+
 // CHANNELS_DIR：plugin 扫描目录。default 是源码目录 `./channels`（开发）或运行时 `~/.forge-hub/channels`（部署）
 // 可通过 FORGE_HUB_CHANNELS_DIR 环境变量覆盖——给开源用户 / 独立 plugin 发布场景用
 export const CHANNELS_DIR = process.env.FORGE_HUB_CHANNELS_DIR || path.resolve(import.meta.dir, "channels");
@@ -97,8 +111,6 @@ export function auditAllowlistPerms(): void {
 // tokens reach MCP subprocesses that don't inherit the plist env.
 // hub-client and forge-cli carry their own copy of this same logic (no cross-
 // package import because each package is deployed independently).
-
-export const API_TOKEN_FILE = path.join(HUB_DIR, "api-token");
 
 export function readAuthToken(): string {
   const fromEnv = process.env.HUB_API_TOKEN;
