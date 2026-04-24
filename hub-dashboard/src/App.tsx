@@ -77,8 +77,9 @@ function pickDefaultAI(ais: DesignAI[]) {
 }
 
 function availabilityPreview(ai: DesignAI) {
-  if (!ai.isChannel) return "仅工具 · 不接收消息";
-  return ai.status === "online" ? `在线 · ${ai.uptime}` : "离线";
+  if (ai.status !== "online") return "离线";
+  if (!ai.isChannel) return `在线 · ${ai.uptime}`;
+  return `在线 · ${ai.uptime}`;
 }
 
 function HubStateCard({ title, description, detail }: { title: string; description: string; detail: string }) {

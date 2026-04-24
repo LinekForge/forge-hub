@@ -8,7 +8,7 @@ const hubDir = fs.mkdtempSync(path.join(os.tmpdir(), "forge-hub-instance-tests-"
 process.env.FORGE_HUB_DIR = hubDir;
 
 const { getInstances, listKnownInstances, setInstanceTag } = await import("./instance-manager.js");
-const { loadChannelState, saveChannelState } = await import("./state.js");
+const { loadChannelState } = await import("./state.js");
 import type { ConnectedInstance } from "./types.js";
 
 function makeChannelInstance(id: string, description: string, channels?: string[]): ConnectedInstance {
@@ -24,9 +24,15 @@ function makeChannelInstance(id: string, description: string, channels?: string[
   };
 }
 
+function writeTestState(channel: string, key: string, data: unknown) {
+  const dir = path.join(hubDir, "state", channel);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${key}.json`), JSON.stringify(data, null, 2));
+}
+
 beforeEach(() => {
   getInstances().clear();
-  saveChannelState("_hub", "instance-identities", {});
+  writeTestState("_hub", "instance-identities", {});
 });
 
 afterAll(() => {
@@ -37,7 +43,7 @@ describe("listKnownInstances", () => {
   test("includes persisted tool-only instances and keeps channel listeners first", () => {
     const freshSeenAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const staleSeenAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
-    saveChannelState("_hub", "instance-identities", {
+    writeTestState("_hub", "instance-identities", {
       "tool-1": { description: "Tool Worker", isChannel: false, lastSeenAt: freshSeenAt },
       "offline-channel": { description: "Offline Channel", isChannel: true, channels: ["wechat"], lastSeenAt: freshSeenAt },
       "stale-tool": { description: "Old Tool", isChannel: false, lastSeenAt: staleSeenAt },
@@ -74,7 +80,7 @@ describe("listKnownInstances", () => {
   });
 
   test("backfills legacy channel identities but drops tool-only ghosts without lastSeenAt", () => {
-    saveChannelState("_hub", "instance-identities", {
+    writeTestState("_hub", "instance-identities", {
       "legacy-channel": { description: "Legacy Channel", isChannel: true, channels: ["wechat"] },
       "legacy-tool": { description: "Legacy Tool", isChannel: false },
     });
@@ -92,7 +98,7 @@ describe("listKnownInstances", () => {
     getInstances().set("live-channel", live);
     expect(setInstanceTag("live-channel", "ops")).toBe(true);
 
-    saveChannelState("_hub", "instance-identities", {
+    writeTestState("_hub", "instance-identities", {
       "live-channel": { tag: "ops", description: "Live Channel", isChannel: true, lastSeenAt: new Date().toISOString() },
       "offline-channel": { tag: "qa", description: "Offline Channel", isChannel: true, lastSeenAt: new Date().toISOString() },
     });

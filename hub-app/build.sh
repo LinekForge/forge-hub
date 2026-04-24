@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HUB_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DASHBOARD_DIR="$HUB_ROOT/hub-dashboard"
 APP_NAME="Forge Hub"
 APP="$SCRIPT_DIR/$APP_NAME.app"
 SRC="$SCRIPT_DIR/app"
@@ -12,17 +14,29 @@ echo "=== 编译 Forge Hub ==="
 osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true
 sleep 1
 
-# 2. Create .app bundle
+# 2. Build dashboard
+if [ -d "$DASHBOARD_DIR" ]; then
+  echo "  → 编译 Dashboard..."
+  (cd "$DASHBOARD_DIR" && bun install --frozen-lockfile 2>/dev/null; bun run build 2>&1 | tail -3)
+fi
+
+# 3. Create .app bundle
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$SRC/Info.plist" "$APP/Contents/"
 echo -n "APPL????" > "$APP/Contents/PkgInfo"
 
-# 3. Copy icon if exists
+# 4. Copy icon if exists
 [ -f "$SRC/AppIcon.icns" ] && cp "$SRC/AppIcon.icns" "$APP/Contents/Resources/"
 [ -f "$SRC/icon.png" ] && cp "$SRC/icon.png" "$APP/Contents/Resources/"
 
-# 4. Compile Swift
+# 5. Bundle dashboard dist
+if [ -d "$DASHBOARD_DIR/dist" ]; then
+  echo "  → 打包 Dashboard 到 app bundle..."
+  cp -r "$DASHBOARD_DIR/dist" "$APP/Contents/Resources/dashboard-dist"
+fi
+
+# 6. Compile Swift
 echo "  → 编译 Swift..."
 swiftc \
     "$SRC/Models.swift" \
@@ -40,11 +54,11 @@ swiftc \
     -target arm64-apple-macos13.0 \
     -suppress-warnings
 
-# 5. Sign
+# 7. Sign
 xattr -cr "$APP" 2>/dev/null || true
 codesign --force --deep --sign - "$APP"
 
-# 6. Deploy scan-sessions.py
+# 8. Deploy scan-sessions.py
 mkdir -p "$HOME/.claude/自动化/scripts"
 cp "$SCRIPT_DIR/shared/scan-sessions.py" "$HOME/.claude/自动化/scripts/" 2>/dev/null || true
 

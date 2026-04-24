@@ -4,6 +4,7 @@ import { CHANNEL_ICON } from "./channel_icons";
 import { approveFromDashboard, denyFromDashboard, sendMessage } from "./api";
 import type { DesignAI, DesignChannel } from "./adapter";
 import { isNativeApp, bridge } from "./native-bridge";
+import { groupNativeSessions } from "./native-adapter";
 import { useHubStore } from "./store";
 
 interface LastMessagePreview {
@@ -395,7 +396,13 @@ function ContactRow({ ai, last, active, onClick }: ContactRowProps) {
         <div style={chatStyles.contactTop}>
           <span style={chatStyles.contactName}>{ai.name}</span>
           {ai.alias && <span style={chatStyles.contactAlias}>· {ai.alias}</span>}
-          {!ai.isChannel && <span style={chatStyles.contactBadge}>仅工具</span>}
+          {ai.status === 'online' && <span style={{
+            ...chatStyles.contactBadge,
+            background: ai.isChannel ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.06)',
+            color: ai.isChannel ? 'var(--green)' : 'var(--text-3)',
+            border: ai.isChannel ? '1px solid rgba(74,222,128,0.15)' : '1px solid var(--border)',
+            fontSize: 11,
+          }}>{ai.isChannel ? '↑↓' : '↑'}</span>}
           <span style={chatStyles.contactTime}>{ai.lastMessageAt}</span>
         </div>
         <div style={chatStyles.contactPreview}>
@@ -474,9 +481,11 @@ function TypingIndicator({ ai }: { ai: DesignAI }) {
   );
 }
 
-function pinyinMatch(text: string, query: string): boolean {
-  if (text.toLowerCase().includes(query)) return true;
-  return false;
+// Pinyin data is precomputed in Swift (CFStringTransform) and attached to NativeSession.
+// We just need to look it up from the store.
+function getPinyinForAI(id: string): string {
+  const sessions = useHubStore.getState().nativeSessions;
+  return sessions.find(s => s.sid === id)?.pinyin ?? '';
 }
 
 function ContactContextMenu({ ai, x, y, onClose, onAction }: {
@@ -610,9 +619,11 @@ function ContactList({ activeId, hubVersion, ais, lastMessages, onSelect, search
   const filtered = ais.filter((ai) => {
     if (!search) return true;
     const q = search.toLowerCase();
-    return ai.name.toLowerCase().includes(q)
-      || (ai.alias && ai.alias.toLowerCase().includes(q))
-      || pinyinMatch(ai.name, q);
+    if (ai.name.toLowerCase().includes(q)) return true;
+    if (ai.alias && ai.alias.toLowerCase().includes(q)) return true;
+    const pinyin = getPinyinForAI(ai.id);
+    if (pinyin && pinyin.includes(q)) return true;
+    return false;
   });
 
   return (
@@ -630,9 +641,30 @@ function ContactList({ activeId, hubVersion, ais, lastMessages, onSelect, search
         </div>
         <div style={{ flex: 1 }}>
           <div style={chatStyles.brand}>Forge Hub</div>
-          <div style={chatStyles.brandMeta}>v{hubVersion} · 运行中</div>
+          <div style={chatStyles.brandMeta}>v{hubVersion} · {(() => {
+            const hubOnline = useHubStore.getState().hubInfo != null;
+            if (!hubOnline && useHubStore.getState().isNativeApp) return <span style={{ color: 'var(--amber)' }}>Hub 离线</span>;
+            return '运行中';
+          })()}</div>
         </div>
       </div>
+      {isNativeApp() && <div style={{ display: 'flex', gap: 6, padding: '4px 14px' }}>
+        <button className="hoverable" onClick={() => bridge.launchNewSession()} style={{
+          padding: '4px 10px', borderRadius: 8, border: '1px solid var(--border)',
+          background: 'rgba(255,255,255,0.03)', color: 'var(--text-2)', fontSize: 11, cursor: 'pointer',
+        }}>✦ 新会话</button>
+        <button className="hoverable" onClick={() => {
+          bridge.fetchHubChannels().then(hubCh => {
+            const channelList = hubCh.length > 0
+              ? hubCh.map((c: { id: string; name: string }) => ({ id: c.id, name: c.name }))
+              : [{ id: 'wechat', name: '微信' }, { id: 'telegram', name: 'Telegram' }, { id: 'feishu', name: '飞书' }, { id: 'imessage', name: 'iMessage' }, { id: 'homeland', name: 'Homeland' }];
+            setChannelDialog({ sid: '__new__', channels: channelList, preselected: [] });
+          });
+        }} style={{
+          padding: '4px 10px', borderRadius: 8, border: '1px solid var(--border)',
+          background: 'rgba(255,255,255,0.03)', color: 'var(--text-2)', fontSize: 11, cursor: 'pointer',
+        }}>📡 通道会话</button>
+      </div>}
       <div style={chatStyles.search}>
         <IconSearch size={13}/>
         <input
@@ -643,36 +675,68 @@ function ContactList({ activeId, hubVersion, ais, lastMessages, onSelect, search
         />
       </div>
       <div style={chatStyles.contacts}>
-        {filtered.map(ai => (
-          <div key={ai.id} onContextMenu={(e) => {
-            e.preventDefault();
-            setCtxMenu({ ai, x: e.clientX, y: e.clientY });
-          }}>
-            <ContactRow
-              ai={ai}
-              last={lastMessages[ai.id]}
-              active={ai.id === activeId}
-              onClick={() => onSelect(ai.id)}
-            />
-          </div>
-        ))}
+        {(() => {
+          const nativeSessions = useHubStore.getState().nativeSessions;
+          const native = useHubStore.getState().isNativeApp;
+          if (!native || !nativeSessions.length || search) {
+            return filtered.map(ai => (
+              <div key={ai.id} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ ai, x: e.clientX, y: e.clientY }); }}>
+                <ContactRow ai={ai} last={lastMessages[ai.id]} active={ai.id === activeId} onClick={() => onSelect(ai.id)}/>
+              </div>
+            ));
+          }
+          const { starred, groups } = groupNativeSessions(nativeSessions);
+          const sectionStyle = { padding: '8px 14px 4px', fontSize: 11, fontWeight: 500 as const, color: 'var(--text-3)', letterSpacing: '0.04em' };
+          const renderAi = (sid: string) => {
+            const ai = filtered.find(a => a.id === sid);
+            if (!ai) return null;
+            return (
+              <div key={ai.id} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ ai, x: e.clientX, y: e.clientY }); }}>
+                <ContactRow ai={ai} last={lastMessages[ai.id]} active={ai.id === activeId} onClick={() => onSelect(ai.id)}/>
+              </div>
+            );
+          };
+          return (
+            <>
+              {starred.length > 0 && <>
+                <div style={sectionStyle}>★ 置顶</div>
+                {starred.map(s => renderAi(s.sid))}
+              </>}
+              {groups.map(g => {
+                const items = g.sessions.map(s => renderAi(s.sid)).filter(Boolean);
+                if (!items.length) return null;
+                return <React.Fragment key={g.label}>
+                  <div style={sectionStyle}>{g.label}</div>
+                  {items}
+                </React.Fragment>;
+              })}
+            </>
+          );
+        })()}
       </div>
       {channelDialog && <ChannelConfigDialog
-        title="通道恢复"
+        title={channelDialog.sid === '__new__' ? '通道会话' : '通道恢复'}
         channels={channelDialog.channels}
         preselected={channelDialog.preselected}
         onCancel={() => setChannelDialog(null)}
         onConfirm={(config) => {
-          const sessions = useHubStore.getState().nativeSessions;
-          const session = sessions.find((s: { sid: string }) => s.sid === channelDialog.sid);
-          const desc = session?.description || session?.hubDesc || '';
-          const tag = session?.tag || session?.hubTag || '';
-          bridge.resumeChannelSession(channelDialog.sid, {
-            channels: config.channels,
-            description: desc,
-            tag,
-            historyCount: Math.max(...Object.values(config.history), 10),
-          });
+          if (channelDialog.sid === '__new__') {
+            bridge.launchChannelSession({
+              channels: config.channels,
+              historyCount: Math.max(...Object.values(config.history), 10),
+            });
+          } else {
+            const sessions = useHubStore.getState().nativeSessions;
+            const session = sessions.find((s: { sid: string }) => s.sid === channelDialog.sid);
+            const desc = session?.description || session?.hubDesc || '';
+            const tag = session?.tag || session?.hubTag || '';
+            bridge.resumeChannelSession(channelDialog.sid, {
+              channels: config.channels,
+              description: desc,
+              tag,
+              historyCount: Math.max(...Object.values(config.history), 10),
+            });
+          }
           setChannelDialog(null);
         }}
       />}
@@ -718,6 +782,10 @@ function ContactList({ activeId, hubVersion, ais, lastMessages, onSelect, search
           }
         }}
       />}
+      <div style={{ padding: '6px 14px', fontSize: 11, color: 'var(--text-4)', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between' }}>
+        <span>{ais.length} 条会话</span>
+        {search && <span>匹配 {filtered.length} / {ais.length}</span>}
+      </div>
     </aside>
   );
 }
@@ -826,7 +894,7 @@ function ChatWindow({ ai, messages, onSend, onApproval, source, sources, onSourc
           <textarea
             ref={taRef}
             style={chatStyles.composerInput}
-            placeholder={canReceive ? `和${ai.name}说点什么…` : `${ai.name} 现在是仅工具实例，不能接收消息`}
+            placeholder={canReceive ? `和${ai.name}说点什么…` : `${ai.name} 当前不接收 Hub 消息`}
             value={value}
             onChange={handleInput}
             onKeyDown={handleKey}
@@ -836,9 +904,17 @@ function ChatWindow({ ai, messages, onSend, onApproval, source, sources, onSourc
             rows={1}
           />
           <div style={chatStyles.composerBar}>
-            <button className="hoverable" style={chatStyles.composerToolBtn} disabled={!canReceive}><IconPaperclip size={15}/></button>
+            <button className="hoverable" style={chatStyles.composerToolBtn} disabled={!canReceive} onClick={() => {
+              if (!canReceive) return;
+              if (isNativeApp()) {
+                bridge.pickFile().then(filePath => {
+                  if (!filePath) return;
+                  onSend(`[文件] ${filePath}`);
+                });
+              }
+            }}><IconPaperclip size={15}/></button>
             <button className="hoverable" style={chatStyles.composerToolBtn} disabled={!canReceive}><IconSparkle size={15}/></button>
-            <span style={chatStyles.hint}>{canReceive ? '↵ 发送 · ⇧↵ 换行' : '这是一个仅工具实例，不在通道接手链上'}</span>
+            <span style={chatStyles.hint}>{canReceive ? '↵ 发送 · ⇧↵ 换行' : '↑ 单向模式 · 不接收推送消息'}</span>
             <button
               onClick={handleSend}
               style={{ ...chatStyles.sendBtn, ...((canReceive && value.trim()) ? {} : chatStyles.sendBtnDisabled) }}
@@ -877,8 +953,8 @@ function Profile({ ai, pending, channels, activeSource, onSourceChange }: Profil
 
       <div>
         <div style={chatStyles.profileSection}>状态</div>
-        <div style={chatStyles.kv}><span style={chatStyles.kvKey}>模式</span><span style={chatStyles.kvVal}>{ai.isChannel ? '通道接手' : '仅工具'}</span></div>
-        <div style={chatStyles.kv}><span style={chatStyles.kvKey}>连接</span><span style={chatStyles.kvVal}>{ai.isChannel ? (ai.status === 'online' ? '在线' : '离线') : '不接收 Hub 消息'}</span></div>
+        <div style={chatStyles.kv}><span style={chatStyles.kvKey}>模式</span><span style={chatStyles.kvVal}>{ai.status !== 'online' ? '离线' : ai.isChannel ? '↑↓ 双向通信' : '↑ 单向'}</span></div>
+        <div style={chatStyles.kv}><span style={chatStyles.kvKey}>连接</span><span style={chatStyles.kvVal}>{ai.status === 'online' ? '在线' : '离线'}</span></div>
         <div style={chatStyles.kv}><span style={chatStyles.kvKey}>运行时长</span><span style={chatStyles.kvVal}>{ai.uptime}</span></div>
       </div>
 

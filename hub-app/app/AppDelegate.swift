@@ -98,6 +98,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let config = WKWebViewConfiguration()
         config.userContentController = contentController
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
@@ -136,17 +138,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if args.contains("--dev") {
             webView.load(URLRequest(url: URL(string: "http://localhost:5173")!))
             os_log("Loading dashboard from dev server (localhost:5173)", log: log, type: .info)
-        } else if args.contains("--hub") {
-            webView.load(URLRequest(url: URL(string: "http://localhost:9900")!))
-            os_log("Loading dashboard from Hub server (localhost:9900)", log: log, type: .info)
         } else if let distPath = Bundle.main.path(forResource: "index", ofType: "html", inDirectory: "dashboard-dist") {
             let distURL = URL(fileURLWithPath: distPath)
-            let distDir = distURL.deletingLastPathComponent()
-            webView.loadFileURL(distURL, allowingReadAccessTo: distDir)
-            os_log("Loading dashboard from bundle", log: log, type: .info)
+            let baseDir = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/dashboard-dist")
+            webView.loadFileURL(distURL, allowingReadAccessTo: baseDir)
+            os_log("Loading dashboard from bundle: %{public}@", log: log, type: .info, distPath)
         } else {
-            webView.load(URLRequest(url: URL(string: "http://localhost:5173")!))
-            os_log("No bundled dashboard found, falling back to dev server", log: log, type: .info)
+            webView.load(URLRequest(url: URL(string: "http://localhost:9900")!))
+            os_log("No bundled dashboard, falling back to Hub server", log: log, type: .info)
         }
     }
 

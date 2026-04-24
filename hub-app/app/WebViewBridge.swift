@@ -143,6 +143,28 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
             hubClient.writeSessionFile(tag: tag, description: desc, channels: channels, history: history)
             respond(callbackId, result: true)
 
+        case "pickFile":
+            DispatchQueue.main.async { [weak self] in
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = true
+                panel.canChooseDirectories = false
+                panel.allowsMultipleSelection = false
+                panel.message = "选择要发送的文件"
+                if panel.runModal() == .OK, let url = panel.url {
+                    self?.respond(callbackId, result: url.path)
+                } else {
+                    self?.respond(callbackId, result: "")
+                }
+            }
+            return
+
+        case "sendFile":
+            if let filePath = params["filePath"] as? String, !filePath.isEmpty {
+                respond(callbackId, result: filePath)
+            } else {
+                respond(callbackId, result: "")
+            }
+
         case "getSessionHistory":
             if let sid = params["sid"] as? String {
                 let limit = params["limit"] as? Int ?? 100
@@ -197,6 +219,8 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
             if let t = localDesc?.tag, !t.isEmpty { entry["tag"] = t }
             if let hd = scanner.hubDescs[sidPrefix], !hd.isEmpty { entry["hubDesc"] = hd }
             if let ht = scanner.hubTags[sidPrefix], !ht.isEmpty { entry["hubTag"] = ht }
+            let displayName = (localDesc?.description ?? scanner.hubDescs[sidPrefix] ?? session.display)
+            entry["pinyin"] = searchablePinyin(displayName)
             if let pid = pid {
                 entry["hubInstanceId"] = "\(hubClient.instancePrefix)\(pid)"
             }
@@ -206,6 +230,21 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
             }
             return entry
         }
+    }
+
+    // MARK: - Pinyin
+
+    private func searchablePinyin(_ s: String) -> String {
+        let mutable = NSMutableString(string: s)
+        CFStringTransform(mutable, nil, kCFStringTransformToLatin, false)
+        CFStringTransform(mutable, nil, kCFStringTransformStripDiacritics, false)
+        let latin = (mutable as String).lowercased()
+        let initials = latin
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .compactMap { $0.first }
+            .map(String.init)
+            .joined()
+        return latin + " " + initials
     }
 
     // MARK: - JSONL History

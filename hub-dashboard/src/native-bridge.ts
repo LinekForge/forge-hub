@@ -13,6 +13,7 @@ export interface NativeSession {
   isChannel?: boolean;
   channels?: string[];
   hubInstanceId?: string;
+  pinyin?: string;
 }
 
 interface BridgeCallbacks {
@@ -66,6 +67,9 @@ export const bridge = {
 
   fetchHubChannels: () => call<Array<{ id: string; name: string; aliases: string[] }>>("fetchHubChannels"),
   getChannelPresets: () => call<Array<{ name: string; subscribe: string[]; history: Record<string, number> }>>("getChannelPresets"),
+
+  pickFile: () => call<string>("pickFile"),
+  sendFile: (sid: string, filePath: string) => call<boolean>("sendFile", { sid, filePath }),
 
   quit: () => call<void>("quit"),
 };

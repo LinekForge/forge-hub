@@ -44,12 +44,18 @@ function makePending(requestId: string): PendingPermission {
   };
 }
 
+function writeTestAllowlist(channel: string, data: unknown) {
+  const dir = path.join(hubDir, "state", channel);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "allowlist.json"), JSON.stringify(data, null, 2));
+}
+
 beforeEach(() => {
   pendingPermissions.clear();
   idLookup.clear();
   getInstances().clear();
-  saveChannelState("wechat", "allowlist", { allowed: [], auto_allow_next: false });
-  saveChannelState("imessage", "allowlist", { allowed: [], auto_allow_next: false });
+  writeTestAllowlist("wechat", { allowed: [], auto_allow_next: false });
+  writeTestAllowlist("imessage", { allowed: [], auto_allow_next: false });
 });
 
 afterAll(() => {

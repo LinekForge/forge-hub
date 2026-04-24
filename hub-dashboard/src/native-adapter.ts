@@ -1,6 +1,30 @@
 import type { NativeSession } from "./native-bridge";
 import type { DesignAI } from "./adapter";
 
+export function groupNativeSessions(sessions: NativeSession[]): { starred: NativeSession[]; groups: { label: string; sessions: NativeSession[] }[] } {
+  const starred = sessions.filter(s => s.isStarred);
+  const rest = sessions.filter(s => !s.isStarred);
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+  const yesterdayStart = todayStart - 86400;
+
+  const grouped = new Map<string, NativeSession[]>();
+  for (const s of rest) {
+    let label: string;
+    if (s.timestamp >= todayStart) label = '今天';
+    else if (s.timestamp >= yesterdayStart) label = '昨天';
+    else {
+      const d = new Date(s.timestamp * 1000);
+      label = `${d.getMonth() + 1}月${d.getDate()}日`;
+    }
+    if (!grouped.has(label)) grouped.set(label, []);
+    grouped.get(label)!.push(s);
+  }
+
+  return { starred, groups: [...grouped.entries()].map(([label, sessions]) => ({ label, sessions })) };
+}
+
 const SHAPES = ["bloom", "ripple", "prism", "moss", "default"];
 
 function hashSeed(s: string): number {
@@ -34,7 +58,7 @@ export function adaptNativeSession(s: NativeSession, index: number): DesignAI {
     name: name || s.display,
     alias,
     role: "",
-    isChannel: s.isChannel ?? false,
+    isChannel: s.isActive ? (s.isChannel ?? false) : false,
     status: s.isActive ? "online" : "offline",
     statusText: s.isActive
       ? (s.isChannel ? "在线" : "在线 · 仅工具")
