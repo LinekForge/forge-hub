@@ -135,8 +135,28 @@ function hasTrustedDashboardOrigin(req: Request, url: URL): boolean {
   return trustedDashboardOrigins(url).has(origin);
 }
 
-function requiresDashboardOriginCheck(req: Request, isWsUpgrade: boolean): boolean {
-  return isWsUpgrade || ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+function requiresDashboardOriginCheck(req: Request, routePath: string, isWsUpgrade: boolean): boolean {
+  return (
+    isWsUpgrade ||
+    (req.method === "GET" && routePath === "/homeland/stream") ||
+    ["POST", "PUT", "PATCH", "DELETE"].includes(req.method)
+  );
+}
+
+function shouldRejectUntrustedBrowserOrigin(req: Request, url: URL, routePath: string, isWsUpgrade: boolean): boolean {
+  const origin = req.headers.get("Origin");
+  if (!origin) return false;
+  if (!requiresDashboardOriginCheck(req, routePath, isWsUpgrade)) return false;
+  return !trustedDashboardOrigins(url).has(origin);
+}
+
+function trustedDashboardCorsHeaders(req: Request, url: URL): Record<string, string> {
+  const origin = req.headers.get("Origin");
+  if (!origin || !trustedDashboardOrigins(url).has(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Vary": "Origin",
+  };
 }
 
 function buildPublicHealth() {
@@ -351,6 +371,14 @@ export function startServer(config: HubConfig): void {
       const isDashboardAuth = req.method === "POST" && routePath === "/dashboard-auth";
       const isDashboardLogout = req.method === "POST" && routePath === "/dashboard-logout";
       const hasDashboardCookie = hasDashboardSession(req, apiToken);
+
+      // Browser origin is a separate trust boundary from the localhost process
+      // model. Even in no-token mode, a random webpage must not be able to
+      // register a WS instance, subscribe to SSE, or mutate Hub state via CSRF.
+      if (shouldRejectUntrustedBrowserOrigin(req, url, routePath, isWsUpgrade)) {
+        return Response.json({ error: "forbidden_origin" }, { status: 403 });
+      }
+
       if (apiToken && !isPublicHealthCheck && !isDashboardStatic && !isDashboardAuth && !isDashboardLogout) {
         let providedToken = "";
         if (isWsUpgrade || (req.method === "GET" && routePath === "/homeland/stream")) {
@@ -363,7 +391,7 @@ export function startServer(config: HubConfig): void {
         if (!hasBearerToken && !hasDashboardCookie) {
           return Response.json({ error: "unauthorized" }, { status: 401 });
         }
-        if (!hasBearerToken && hasDashboardCookie && requiresDashboardOriginCheck(req, isWsUpgrade) && !hasTrustedDashboardOrigin(req, url)) {
+        if (!hasBearerToken && hasDashboardCookie && requiresDashboardOriginCheck(req, routePath, isWsUpgrade) && !hasTrustedDashboardOrigin(req, url)) {
           return Response.json({ error: "forbidden_origin" }, { status: 403 });
         }
       }
@@ -1073,7 +1101,7 @@ export function startServer(config: HubConfig): void {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
+            ...trustedDashboardCorsHeaders(req, url),
           },
         });
       }

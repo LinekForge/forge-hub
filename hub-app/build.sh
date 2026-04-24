@@ -29,6 +29,7 @@ echo -n "APPL????" > "$APP/Contents/PkgInfo"
 # 4. Copy icon if exists
 [ -f "$SRC/AppIcon.icns" ] && cp "$SRC/AppIcon.icns" "$APP/Contents/Resources/"
 [ -f "$SRC/icon.png" ] && cp "$SRC/icon.png" "$APP/Contents/Resources/"
+cp "$SCRIPT_DIR/shared/scan-sessions.py" "$APP/Contents/Resources/scan-sessions.py"
 
 # 5. Bundle dashboard dist
 if [ -d "$DASHBOARD_DIR/dist" ]; then

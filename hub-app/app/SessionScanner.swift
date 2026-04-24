@@ -104,8 +104,10 @@ class SessionScanner {
             }
             self.scanActiveSessions()
 
-            let scriptPath = FileManager.default.homeDirectoryForCurrentUser
+            let legacyScriptPath = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".claude/自动化/scripts/scan-sessions.py").path
+            let bundledScriptPath = Bundle.main.path(forResource: "scan-sessions", ofType: "py")
+            let scriptPath = bundledScriptPath ?? legacyScriptPath
 
             guard FileManager.default.fileExists(atPath: scriptPath) else {
                 DispatchQueue.main.async {

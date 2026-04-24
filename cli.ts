@@ -16,6 +16,11 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  parseHubStatusResponse,
+  parsePublicHealthResponse,
+  splitCurlBodyAndStatus,
+} from "./forge-cli/doctor.js";
 
 const HOME = os.homedir();
 const HUB_DIR = path.join(HOME, ".forge-hub");
@@ -372,10 +377,27 @@ function doctorCmd(): void {
 
   // Hub running?
   try {
-    const port = process.env.FORGE_HUB_URL ?? "http://localhost:9900";
-    const res = execFileSync("curl", ["-s", "-m", "2", `${port}/status`], { encoding: "utf-8" });
-    const data = JSON.parse(res);
-    log(`✓ Hub server running (v${data.version}, uptime ${Math.round(data.uptime / 60)}min)`);
+    const baseUrl = process.env.FORGE_HUB_URL ?? "http://localhost:9900";
+    const health = splitCurlBodyAndStatus(execFileSync("curl", ["-s", "-m", "2", "-w", "\n%{http_code}", `${baseUrl}/health`], { encoding: "utf-8" }));
+    const publicHealth = parsePublicHealthResponse(health.status, health.body);
+    if (publicHealth.kind !== "online") {
+      throw new Error(publicHealth.reason);
+    }
+
+    const token = readInstallAuthToken();
+    const statusArgs = ["-s", "-m", "2", "-w", "\n%{http_code}"];
+    if (token) statusArgs.push("-H", `Authorization: Bearer ${token}`);
+    statusArgs.push(`${baseUrl}/status`);
+    const detailed = splitCurlBodyAndStatus(execFileSync("curl", statusArgs, { encoding: "utf-8" }));
+    const parsed = parseHubStatusResponse(detailed.status, detailed.body);
+    if (parsed.kind === "online") {
+      log(`✓ Hub server running (v${parsed.version}, uptime ${Math.round(parsed.uptime / 60)}min)`);
+    } else if (parsed.kind === "unauthorized") {
+      log(`✓ Hub server running (v${publicHealth.version}, uptime ${Math.round(publicHealth.uptime / 60)}min; /status 需要 HUB_API_TOKEN，详细状态未读取)`);
+    } else {
+      log(`⚠️  Hub server running，但 /status 解析失败: ${parsed.reason}`);
+      ok = false;
+    }
   } catch {
     log("✗ Hub server not responding\n   检查 launchctl list | grep forge-hub，或前台跑 bun ~/.forge-hub/hub.ts");
     ok = false;
@@ -461,6 +483,17 @@ function which(cmd: string): string | null {
   } catch {
     return null;
   }
+}
+
+function readInstallAuthToken(): string {
+  const fromEnv = process.env.HUB_API_TOKEN;
+  if (fromEnv) return fromEnv;
+  try {
+    if (fs.existsSync(API_TOKEN_FILE)) {
+      return fs.readFileSync(API_TOKEN_FILE, "utf-8").trim();
+    }
+  } catch {}
+  return "";
 }
 
 function readClaudeJson(): Record<string, unknown> {

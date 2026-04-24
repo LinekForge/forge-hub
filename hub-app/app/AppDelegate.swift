@@ -16,6 +16,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let store = SessionStore()
     let descStore = SessionDescriptionStore()
     var hubClient: HubClient!
+    private var isDevMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("--dev")
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         descStore.load()
@@ -97,7 +100,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let config = WKWebViewConfiguration()
         config.userContentController = contentController
-        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        config.preferences.setValue(isDevMode, forKey: "developerExtrasEnabled")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
 
@@ -134,8 +137,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadDashboard() {
-        let args = ProcessInfo.processInfo.arguments
-        if args.contains("--dev") {
+        if isDevMode {
             webView.load(URLRequest(url: URL(string: "http://localhost:5173")!))
             os_log("Loading dashboard from dev server (localhost:5173)", log: log, type: .info)
         } else if let distPath = Bundle.main.path(forResource: "index", ofType: "html", inDirectory: "dashboard-dist") {
@@ -144,8 +146,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             webView.loadFileURL(distURL, allowingReadAccessTo: baseDir)
             os_log("Loading dashboard from bundle: %{public}@", log: log, type: .info, distPath)
         } else {
-            webView.load(URLRequest(url: URL(string: "http://localhost:9900")!))
-            os_log("No bundled dashboard, falling back to Hub server", log: log, type: .info)
+            let html = """
+            <!doctype html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                html, body { margin: 0; height: 100%; background: #0b0b10; color: #f4f4f5; font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
+                body { display: grid; place-items: center; }
+                main { width: min(560px, calc(100% - 48px)); padding: 24px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.04); }
+                h1 { margin: 0 0 10px; font-size: 20px; }
+                p { margin: 0; color: #a1a1aa; line-height: 1.65; }
+                code { color: #c7d2fe; }
+              </style>
+            </head>
+            <body>
+              <main>
+                <h1>Dashboard bundle missing</h1>
+                <p>Forge Hub Native Client 没有找到内嵌的 <code>dashboard-dist/index.html</code>。请重新运行 <code>hub-app/build.sh</code> 构建完整 app；开发模式可用 <code>--dev</code> 连接 localhost:5173。</p>
+              </main>
+            </body>
+            </html>
+            """
+            webView.loadHTMLString(html, baseURL: nil)
+            os_log("No bundled dashboard; fail-closed instead of loading localhost", log: log, type: .error)
         }
     }
 
