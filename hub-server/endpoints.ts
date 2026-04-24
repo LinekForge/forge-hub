@@ -64,8 +64,12 @@ import { appendHistory, getOutboundFrom, readRecentHistory } from "./history.js"
 import { synthesizeToOgg } from "./tts.js";
 import { getCurrentConfig, startedAt } from "./hub-state.js";
 
-const DASHBOARD_DIR = path.join(import.meta.dir, "..", "hub-dashboard", "dist");
 const DASHBOARD_AUTH_COOKIE = "forge_hub_dashboard";
+const DASHBOARD_DIR_CANDIDATES = [
+  process.env.FORGE_HUB_DASHBOARD_DIR,
+  path.join(import.meta.dir, "hub-dashboard", "dist"),
+  path.join(import.meta.dir, "..", "hub-dashboard", "dist"),
+].filter((entry): entry is string => Boolean(entry));
 const DASHBOARD_MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
   ".js": "application/javascript",
@@ -112,12 +116,98 @@ function clearDashboardAuthCookie(): string {
   return `${DASHBOARD_AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
 }
 
+function trustedDashboardOrigins(url: URL): Set<string> {
+  const origins = new Set<string>([url.origin]);
+  const port = url.port ? `:${url.port}` : "";
+  origins.add(`${url.protocol}//localhost${port}`);
+  origins.add(`${url.protocol}//127.0.0.1${port}`);
+  origins.add(`${url.protocol}//[::1]${port}`);
+  origins.add("http://localhost:5173");
+  origins.add("http://127.0.0.1:5173");
+  const configured = process.env.FORGE_HUB_DASHBOARD_ORIGINS ?? "";
+  for (const origin of configured.split(",").map((entry) => entry.trim()).filter(Boolean)) {
+    origins.add(origin);
+  }
+  return origins;
+}
+
+function hasTrustedDashboardOrigin(req: Request, url: URL): boolean {
+  const origin = req.headers.get("Origin");
+  if (!origin) return true;
+  return trustedDashboardOrigins(url).has(origin);
+}
+
+function requiresDashboardOriginCheck(req: Request, isWsUpgrade: boolean): boolean {
+  return isWsUpgrade || ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+}
+
+function buildPublicHealth() {
+  return {
+    ok: true,
+    name: HUB_NAME,
+    version: HUB_VERSION,
+    uptime: Math.round(process.uptime()),
+    locked: isLocked(),
+  };
+}
+
+function buildDetailedStatus() {
+  const instances = listKnownInstances();
+  const health = getAllChannelHealth();
+  const mem = process.memoryUsage();
+  return {
+    hub: {
+      version: HUB_VERSION,
+      pid: process.pid,
+      uptime: Math.round(process.uptime()),
+      memory_mb: Math.round(mem.rss / 1024 / 1024),
+      started_at: startedAt,
+      lock: getLockState(),
+      locked: isLocked(),
+    },
+    channels: Object.fromEntries(
+      [...channelPlugins.keys()].map(ch => {
+        const h = health[ch] ?? { messagesIn: 0, messagesOut: 0, errors: 0, consecutiveFailures: 0, consecutiveSuccesses: 0 };
+        return [ch, {
+          loaded: true,
+          ...h,
+          health_status: deriveHealthStatus(h as any),
+        }];
+      })
+    ),
+    instances: instances.map((i) => ({
+      id: i.id,
+      tag: i.tag,
+      description: i.description,
+      isChannel: i.isChannel,
+      channels: i.channels,
+      presence: i.presence,
+      connectedAt: i.connectedAt,
+      lastSeenAt: i.lastSeenAt,
+    })),
+  };
+}
+
+function resolveDashboardDir(): string | null {
+  for (const candidate of DASHBOARD_DIR_CANDIDATES) {
+    const root = path.resolve(candidate);
+    try {
+      if (fs.existsSync(path.join(root, "index.html"))) {
+        return root;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 function resolveDashboardStaticFile(pathname: string): string | null {
+  const dashboardDir = resolveDashboardDir();
+  if (!dashboardDir) return null;
   const rawRelative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const normalizedRelative = path.posix.normalize(rawRelative);
   if (!normalizedRelative || normalizedRelative.startsWith("..")) return null;
-  const filePath = path.resolve(DASHBOARD_DIR, normalizedRelative);
-  const dashboardRoot = path.resolve(DASHBOARD_DIR);
+  const filePath = path.resolve(dashboardDir, normalizedRelative);
+  const dashboardRoot = path.resolve(dashboardDir);
   if (!filePath.startsWith(dashboardRoot + path.sep) && filePath !== dashboardRoot) return null;
   try {
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
@@ -248,31 +338,35 @@ export function startServer(config: HubConfig): void {
       // `Authorization: Bearer <token>`。default 不验（保持用户本机 localhost-only 的当前行为）。
       //
       // 豁免清单（严格）：
-      //   - GET /status：健康检查入口，让监控工具能打
+      //   - GET /health：公开健康检查入口，只返回最小状态
       //
       // WebSocket /ws：token 通过 query param `?token=` 传递（WebSocket 标准不允许
       // browser 改 header；Bun-side 保持 query-param 便于跨实现兼容）。之前 /ws 豁免
       // 导致任何本机/网络进程可伪造 instance ID 接管现有连接并劫持通道消息——redteam B1。
       //
-      // 其他所有 GET（如 /pending、/instances、/channels、/history）**都必须带 token**——
+      // 其他所有 GET（如 /status、/pending、/instances、/channels、/history）**都必须带 token**——
       // 它们暴露 pending 审批的 yes_id/no_id、实例列表、聊天历史等敏感数据。
       const apiToken = readAuthToken();
       const isWsUpgrade = req.method === "GET" && routePath === "/ws";
-      const isStatusCheck = req.method === "GET" && routePath === "/status";
+      const isPublicHealthCheck = req.method === "GET" && routePath === "/health";
       const isDashboardStatic = isDashboardStaticRequest(req, url);
       const isDashboardAuth = req.method === "POST" && routePath === "/dashboard-auth";
       const isDashboardLogout = req.method === "POST" && routePath === "/dashboard-logout";
       const hasDashboardCookie = hasDashboardSession(req, apiToken);
-      if (apiToken && !isStatusCheck && !isDashboardStatic && !isDashboardAuth && !isDashboardLogout) {
+      if (apiToken && !isPublicHealthCheck && !isDashboardStatic && !isDashboardAuth && !isDashboardLogout) {
         let providedToken = "";
-        if (isWsUpgrade) {
+        if (isWsUpgrade || (req.method === "GET" && routePath === "/homeland/stream")) {
           providedToken = url.searchParams.get("token") ?? "";
         } else {
           const authHeader = req.headers.get("Authorization") ?? "";
           providedToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
         }
-        if (providedToken !== apiToken && !hasDashboardCookie) {
+        const hasBearerToken = providedToken === apiToken;
+        if (!hasBearerToken && !hasDashboardCookie) {
           return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+        if (!hasBearerToken && hasDashboardCookie && requiresDashboardOriginCheck(req, isWsUpgrade) && !hasTrustedDashboardOrigin(req, url)) {
+          return Response.json({ error: "forbidden_origin" }, { status: 403 });
         }
       }
 
@@ -287,17 +381,14 @@ export function startServer(config: HubConfig): void {
         return new Response("WebSocket upgrade failed", { status: 500 });
       }
 
-      // GET /status
+      // GET /health — public minimal health check
+      if (req.method === "GET" && routePath === "/health") {
+        return Response.json(buildPublicHealth());
+      }
+
+      // GET /status — authenticated detailed status
       if (req.method === "GET" && routePath === "/status") {
-        const instances = getInstances();
-        return Response.json({
-          name: HUB_NAME,
-          version: HUB_VERSION,
-          uptime: process.uptime(),
-          locked: isLocked(),
-          instances: [...instances.keys()],
-          channels: [...channelPlugins.keys()],
-        });
+        return Response.json(buildDetailedStatus());
       }
 
       // POST /dashboard-auth — 浏览器登录，成功后写 HttpOnly cookie
@@ -331,43 +422,6 @@ export function startServer(config: HubConfig): void {
           { success: true },
           { headers: { "Set-Cookie": clearDashboardAuthCookie() } },
         );
-      }
-
-      // GET /health — detailed health for debugging
-      if (req.method === "GET" && routePath === "/health") {
-        const instances = listKnownInstances();
-        const health = getAllChannelHealth();
-        const mem = process.memoryUsage();
-        return Response.json({
-          hub: {
-            version: HUB_VERSION,
-            pid: process.pid,
-            uptime: Math.round(process.uptime()),
-            memory_mb: Math.round(mem.rss / 1024 / 1024),
-            started_at: startedAt,
-            lock: getLockState(),
-          },
-          channels: Object.fromEntries(
-            [...channelPlugins.keys()].map(ch => {
-              const h = health[ch] ?? { messagesIn: 0, messagesOut: 0, errors: 0, consecutiveFailures: 0, consecutiveSuccesses: 0 };
-              return [ch, {
-                loaded: true,
-                ...h,
-                health_status: deriveHealthStatus(h as any),
-              }];
-            })
-          ),
-          instances: instances.map((i) => ({
-            id: i.id,
-            tag: i.tag,
-            description: i.description,
-            isChannel: i.isChannel,
-            channels: i.channels,
-            presence: i.presence,
-            connectedAt: i.connectedAt,
-            lastSeenAt: i.lastSeenAt,
-          })),
-        });
       }
 
       // GET /pending — 列出当前挂起的审批（用户可观测性）

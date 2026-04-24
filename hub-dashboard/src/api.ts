@@ -7,6 +7,28 @@ const BASE = (() => {
   return "/api";
 })();
 export const HUB_AUTH_EVENT = "hub-auth-state";
+let dashboardBearerToken = "";
+
+export function apiUrl(path: string): string {
+  return `${BASE}${path}`;
+}
+
+export function setDashboardBearerToken(token: string): void {
+  dashboardBearerToken = token.trim();
+}
+
+export function getDashboardBearerToken(): string {
+  return dashboardBearerToken;
+}
+
+function credentialsMode(): RequestCredentials {
+  return BASE.startsWith("http") ? "include" : "same-origin";
+}
+
+function authHeaders(headers: Record<string, string> = {}): Record<string, string> {
+  if (!dashboardBearerToken) return headers;
+  return { ...headers, Authorization: `Bearer ${dashboardBearerToken}` };
+}
 
 function emitAuthState(required: boolean, message?: string): void {
   if (typeof window === "undefined") return;
@@ -17,7 +39,10 @@ function emitAuthState(required: boolean, message?: string): void {
 
 async function get<T>(path: string): Promise<T | null> {
   try {
-    const res = await fetch(`${BASE}${path}`, { credentials: "same-origin" });
+    const res = await fetch(apiUrl(path), {
+      credentials: credentialsMode(),
+      headers: authHeaders(),
+    });
     if (res.status === 401) {
       emitAuthState(true);
       return null;
@@ -32,10 +57,10 @@ async function get<T>(path: string): Promise<T | null> {
 
 async function post<T>(path: string, body: unknown): Promise<T | null> {
   try {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(apiUrl(path), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      credentials: credentialsMode(),
       body: JSON.stringify(body),
     });
     if (res.status === 401) {
@@ -57,8 +82,14 @@ export async function fetchOverview(): Promise<OverviewData | null> {
 export async function fetchHealthFallback(): Promise<OverviewData | null> {
   try {
     const [healthRes, pendingRes] = await Promise.all([
-      fetch(`${BASE}/health`, { credentials: "same-origin" }),
-      fetch(`${BASE}/pending`, { credentials: "same-origin" }),
+      fetch(apiUrl("/status"), {
+        credentials: credentialsMode(),
+        headers: authHeaders(),
+      }),
+      fetch(apiUrl("/pending"), {
+        credentials: credentialsMode(),
+        headers: authHeaders(),
+      }),
     ]);
     if (healthRes.status === 401 || pendingRes.status === 401) {
       emitAuthState(true);
@@ -116,10 +147,10 @@ export async function reportPresence(active: boolean): Promise<void> {
 
 export async function authenticateDashboard(token: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const res = await fetch(`${BASE}/dashboard-auth`, {
+    const res = await fetch(apiUrl("/dashboard-auth"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      credentials: credentialsMode(),
       body: JSON.stringify({ token }),
     });
     if (res.ok) {

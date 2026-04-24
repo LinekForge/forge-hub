@@ -107,8 +107,7 @@ async function hubDelete(endpoint: string): Promise<unknown> {
 // ── Hub Commands ────────────────────────────────────────────────────────────
 
 async function hubStatus() {
-  // 改调 /health（比 /status 多通道健康信息）
-  const data = await hubGet("/health") as {
+  const data = await hubGet("/status") as {
     hub: { version: string; uptime: number; memory_mb: number; lock: { locked: boolean } };
     channels: Record<string, { loaded: boolean; health_status?: string; consecutiveFailures?: number; lastError?: string; messagesIn: number; messagesOut: number }>;
     instances: { id: string; tag?: string; description?: string; isChannel?: boolean; channels?: string[]; presence?: "live" | "known"; connectedAt?: string; lastSeenAt?: string }[];
@@ -191,7 +190,7 @@ async function hubUnlock() {
 }
 
 async function hubHealth() {
-  const data = await hubGet("/health") as {
+  const data = await hubGet("/status") as {
     hub: { version: string; pid: number; uptime: number; memory_mb: number; started_at: string };
     channels: Record<string, {
       loaded: boolean; messagesIn: number; messagesOut: number; errors: number;

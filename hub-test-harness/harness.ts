@@ -207,7 +207,7 @@ async function latestAuditAction(hub: TestHub, reqId: string): Promise<string | 
 
 async function hubPid(): Promise<number | null> {
   try {
-    const r = await fetch(`${HUB_URL}/health`);
+    const r = await fetch(`${HUB_URL}/status`);
     const d = (await r.json()) as { hub: { pid: number } };
     return d.hub.pid;
   } catch {

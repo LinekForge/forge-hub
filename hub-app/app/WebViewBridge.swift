@@ -45,6 +45,9 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
                 "everOnline": hubClient.isHubEverOnline
             ])
 
+        case "getHubApiToken":
+            respond(callbackId, result: hubClient.readAuthToken())
+
         case "openSession":
             if let sid = params["sid"] as? String {
                 openSession(sid)
@@ -100,12 +103,12 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
             let channels = params["channels"] as? [String] ?? []
             let tag = params["tag"] as? String ?? ""
             let desc = params["description"] as? String ?? ""
-            let historyCount = params["historyCount"] as? Int ?? 10
+            let history = parseHistoryConfig(params["history"], fallbackCount: params["historyCount"], channels: channels)
             hubClient.writeSessionFile(
                 tag: tag, description: desc,
-                channels: channels, history: ["count": historyCount]
+                channels: channels, history: history, isChannel: true
             )
-            terminal.openTerminal("cd ~ && claude --dangerously-load-development-channels server:hub server:engine")
+            terminal.openTerminal("cd ~ && claude --dangerously-load-development-channels \(developmentChannelArgs())")
             respond(callbackId, result: true)
 
         case "resumeChannelSession":
@@ -113,12 +116,12 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
                 let channels = params["channels"] as? [String] ?? []
                 let tag = params["tag"] as? String ?? ""
                 let desc = params["description"] as? String ?? ""
-                let historyCount = params["historyCount"] as? Int ?? 10
+                let history = parseHistoryConfig(params["history"], fallbackCount: params["historyCount"], channels: channels)
                 hubClient.writeSessionFile(
                     tag: tag, description: desc,
-                    channels: channels, history: ["count": historyCount]
+                    channels: channels, history: history, isChannel: true
                 )
-                terminal.openTerminal("cd ~ && claude --resume \(sid) --dangerously-load-development-channels server:hub server:engine")
+                terminal.openTerminal("cd ~ && claude --resume \(sid) --dangerously-load-development-channels \(developmentChannelArgs())")
             }
             respond(callbackId, result: true)
 
@@ -140,7 +143,7 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
             if let h = params["history"] as? [String: Any] {
                 for (k, v) in h { if let iv = v as? Int { history[k] = iv } }
             }
-            hubClient.writeSessionFile(tag: tag, description: desc, channels: channels, history: history)
+            hubClient.writeSessionFile(tag: tag, description: desc, channels: channels, history: history, isChannel: !channels.isEmpty || !history.isEmpty)
             respond(callbackId, result: true)
 
         case "pickFile":
@@ -195,6 +198,61 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
     }
 
     // MARK: - Session Assembly
+
+    private func parseHistoryConfig(_ raw: Any?, fallbackCount: Any?, channels: [String]) -> [String: Int] {
+        var history: [String: Int] = [:]
+        if let h = raw as? [String: Any] {
+            for (key, value) in h {
+                if let intValue = value as? Int, intValue >= 0 {
+                    history[key] = intValue
+                } else if let numberValue = value as? NSNumber, numberValue.intValue >= 0 {
+                    history[key] = numberValue.intValue
+                }
+            }
+        }
+        if history.isEmpty {
+            let count: Int?
+            if let intValue = fallbackCount as? Int {
+                count = intValue
+            } else if let numberValue = fallbackCount as? NSNumber {
+                count = numberValue.intValue
+            } else {
+                count = nil
+            }
+            if let count = count, count >= 0 {
+                for channel in channels {
+                    history[channel] = count
+                }
+            }
+        }
+        return history
+    }
+
+    private func developmentChannelArgs() -> String {
+        return isEngineRegistered() ? "server:hub server:engine" : "server:hub"
+    }
+
+    private func isEngineRegistered() -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let engineDir = home.appendingPathComponent(".claude/channels/engine")
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: engineDir.path, isDirectory: &isDir), isDir.boolValue {
+            return true
+        }
+
+        let configPaths = [
+            home.appendingPathComponent(".claude.json"),
+            home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json"),
+        ]
+        for url in configPaths {
+            guard let data = try? Data(contentsOf: url),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let servers = obj["mcpServers"] as? [String: Any],
+                  servers["engine"] != nil else { continue }
+            return true
+        }
+        return false
+    }
 
     func buildNativeSessions() -> [[String: Any]] {
         let stars = store.stars

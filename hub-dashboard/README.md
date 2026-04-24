@@ -54,7 +54,7 @@ bun run build
 Dashboard 目前主要依赖这些 Hub 端点：
 
 - `/api/overview`
-- `/api/health`
+- `/api/status`
 - `/api/pending`
 - `/api/pending/:id/approve`
 - `/api/pending/:id/deny`

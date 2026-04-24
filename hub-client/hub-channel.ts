@@ -233,6 +233,11 @@ function hasChannelHandlerReadyLogSince(since: Date): boolean {
 
 async function waitForChannelHandlerReady(timeoutMs = CHANNEL_HANDLER_READY_TIMEOUT_MS): Promise<boolean> {
   if (channelHandlerReady) return true;
+  if (process.platform !== "darwin") {
+    channelHandlerReady = true;
+    log("非 macOS 平台跳过 Claude Code MCP log readiness gate");
+    return true;
+  }
 
   const deadline = Date.now() + timeoutMs;
   const dirs = getClaudeMcpLogDirs("hub", process.cwd());

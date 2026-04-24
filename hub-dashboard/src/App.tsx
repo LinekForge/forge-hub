@@ -23,7 +23,7 @@ import { usePolling } from "./hooks/usePolling";
 import { useSSE } from "./hooks/useSSE";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { usePresence } from "./hooks/usePresence";
-import { HUB_AUTH_EVENT, authenticateDashboard } from "./api";
+import { HUB_AUTH_EVENT, authenticateDashboard, setDashboardBearerToken } from "./api";
 import { requestNotificationPermission } from "./utils/notify";
 import { adaptInstance, adaptChannel } from "./adapter";
 import { isNativeApp, bridge, onSessionsUpdated, initNativeBridgeHandlers } from "./native-bridge";
@@ -217,6 +217,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [nativeAuthReady, setNativeAuthReady] = useState(false);
 
   const instances = useHubStore((s) => s.instances);
   const channelHealth = useHubStore((s) => s.channelHealth);
@@ -224,21 +225,35 @@ export default function App() {
   const hubInfo = useHubStore((s) => s.hubInfo);
   const nativeMode = useHubStore((s) => s.isNativeApp);
   const nativeSessions = useHubStore((s) => s.nativeSessions);
+  const hubToSessionMap = useHubStore((s) => s.hubToSessionMap);
   const setNativeApp = useHubStore((s) => s.setNativeApp);
   const setNativeSessions = useHubStore((s) => s.setNativeSessions);
 
   useEffect(() => {
     if (isNativeApp()) {
       setNativeApp(true);
+      setNativeAuthReady(false);
+      bridge.getHubApiToken()
+        .then((token) => {
+          setDashboardBearerToken(token);
+          if (token) {
+            setAuthRequired(false);
+            setAuthError("");
+          }
+        })
+        .catch(() => {})
+        .finally(() => setNativeAuthReady(true));
       bridge.getSessions().then(setNativeSessions).catch(() => {});
       onSessionsUpdated((sessions) => setNativeSessions(sessions));
       initNativeBridgeHandlers();
+    } else {
+      setNativeAuthReady(true);
     }
   }, [setNativeApp, setNativeSessions]);
 
-  usePolling(!authRequired);
-  useSSE(!authRequired);
-  usePresence(!authRequired);
+  usePolling(nativeAuthReady && !authRequired);
+  useSSE(nativeAuthReady && !authRequired);
+  usePresence(nativeAuthReady && !authRequired);
 
   useEffect(() => { requestNotificationPermission(); }, []);
 
@@ -291,7 +306,8 @@ export default function App() {
     ais.forEach(ai => { c[ai.id] = []; });
     // 把 pending approvals 注入为审批消息（带 request_id 供 handleApproval 使用）
     pendingApprovals.forEach(a => {
-      const targetConvo = c[a.from_instance];
+      const targetId = nativeMode ? (hubToSessionMap[a.from_instance] ?? a.from_instance) : a.from_instance;
+      const targetConvo = c[targetId];
       if (targetConvo) {
         targetConvo.push({
           id: a.request_id,
@@ -306,7 +322,7 @@ export default function App() {
       }
     });
     return c;
-  }, [ais, pendingApprovals]);
+  }, [ais, pendingApprovals, nativeMode, hubToSessionMap]);
 
   const approvalQueue = useMemo(() =>
     pendingApprovals.map(a => ({

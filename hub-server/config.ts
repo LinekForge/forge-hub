@@ -278,7 +278,7 @@ export type ChannelHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknow
  * 无法通过出站 reset health" 的死锁被打破——10 分钟后 status 自动 decay 到
  * unknown，下次出站正常 try，成功则 recordOutbound reset 到 healthy。
  *
- * 纯函数，不写 Map——可以在 /health 等只读 endpoint 里自由调用。
+ * 纯函数，不写 Map——可以在 /status 等只读 endpoint 里自由调用。
  */
 const HEALTH_DECAY_MS = 10 * 60 * 1000; // 10 minutes
 

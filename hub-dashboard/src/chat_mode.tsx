@@ -723,7 +723,7 @@ function ContactList({ activeId, hubVersion, ais, lastMessages, onSelect, search
           if (channelDialog.sid === '__new__') {
             bridge.launchChannelSession({
               channels: config.channels,
-              historyCount: Math.max(...Object.values(config.history), 10),
+              history: config.history,
             });
           } else {
             const sessions = useHubStore.getState().nativeSessions;
@@ -734,7 +734,7 @@ function ContactList({ activeId, hubVersion, ais, lastMessages, onSelect, search
               channels: config.channels,
               description: desc,
               tag,
-              historyCount: Math.max(...Object.values(config.history), 10),
+              history: config.history,
             });
           }
           setChannelDialog(null);

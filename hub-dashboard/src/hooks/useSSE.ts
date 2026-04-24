@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { notify } from "../utils/notify";
 import { useHubStore } from "../store";
+import { apiUrl, getDashboardBearerToken } from "../api";
 
 export function useSSE(enabled = true) {
   const hubToSessionMap = useHubStore((s) => s.hubToSessionMap);
@@ -37,7 +38,10 @@ export function useSSE(enabled = true) {
       closeStream();
 
       try {
-        es = new EventSource("/api/homeland/stream");
+        const url = new URL(apiUrl("/homeland/stream"), window.location.href);
+        const token = getDashboardBearerToken();
+        if (token) url.searchParams.set("token", token);
+        es = new EventSource(url.toString(), { withCredentials: false });
       } catch {
         scheduleReconnect();
         return;

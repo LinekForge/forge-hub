@@ -23,7 +23,7 @@ Forge Hub **本机进程**（绑 `127.0.0.1`）。所有消息和凭证都在本
 ### 已知风险
 
 - **Allowlist 完整性靠文件权限**：`fh hub allow` 写入时强制 `chmod 600`，hub 启动 audit 发现 group/other 可读的自动降权。任何能绕过 FS 权限的进程依然能改。
-- **HTTP API 默认不验（`HUB_API_TOKEN` 未设）**：本机 only 场景下`/send*`、`/pending`、`/history`、`/instances`、`/channels` 等端点对同机任意进程/sandboxed app 可读——包括完整聊天历史和 pending 审批 id。单用户 Mac 风险低，多用户 / 容器 / 共享主机**必须**设 token。设了 token 后，除 `/status`（健康检查）之外所有端点都要 Bearer header / `?token=`（WebSocket）。
+- **HTTP API 默认不验（`HUB_API_TOKEN` 未设）**：本机 only 场景下`/send*`、`/pending`、`/history`、`/instances`、`/channels` 等端点对同机任意进程/sandboxed app 可读——包括完整聊天历史和 pending 审批 id。单用户 Mac 风险低，多用户 / 容器 / 共享主机**必须**设 token。设了 token 后，只有 `/health` 公开最小健康状态；详细 `/status` 和其他端点都要 Bearer header / `?token=`（WebSocket、SSE）或受 Origin 校验保护的 Dashboard cookie。
 - **Channel 协议是 prompt injection 面**：所有入站消息都被包装成 `<channel>` tag 给 LLM 看。Hub 用 `formatUnauthorizedNotice` 加抗 injection 包装。但定制 channel plugin 时**务必**验证 sender。
 - **launchd 进程信任 PATH 配置**：plist 里 PATH 应该精确指向 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`，避免 PATH hijack。
 - **rate-limit 依赖 instance ID 真实性**：`/permission-request` 的 rate limit 按 `body.instance` 分桶。**未设 `HUB_API_TOKEN` 场景下**，同机进程可伪造不同 instance ID 绕过 per-instance 限流，向用户手机刷任意多条审批推送。这不是 bug，是"同机进程都是信任的"本机信任模型的直接推论——`HUB_API_TOKEN` 开启后 WS upgrade 需 `?token=`，伪造 instance 会被 auth 挡。多用户 / 共享主机场景**必须**设 token。

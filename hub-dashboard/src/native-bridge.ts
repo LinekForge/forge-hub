@@ -48,6 +48,7 @@ export const bridge = {
   getSessions: () => call<NativeSession[]>("getSessions"),
   getStarredSessions: () => call<string[]>("getStarredSessions"),
   getHubStatus: () => call<{ online: boolean; everOnline: boolean }>("getHubStatus"),
+  getHubApiToken: () => call<string>("getHubApiToken"),
   getSessionHistory: (sid: string, limit = 100) =>
     call<Array<{ role: string; text: string }>>("getSessionHistory", { sid, limit }),
 
@@ -59,10 +60,10 @@ export const bridge = {
 
   launchNewSession: () => call<void>("launchNewSession"),
   launchChannelSession: (config: {
-    channels: string[]; tag?: string; description?: string; historyCount?: number;
+    channels: string[]; tag?: string; description?: string; history?: Record<string, number>; historyCount?: number;
   }) => call<void>("launchChannelSession", config as unknown as Record<string, unknown>),
   resumeChannelSession: (sid: string, config: {
-    channels: string[]; tag?: string; description?: string; historyCount?: number;
+    channels: string[]; tag?: string; description?: string; history?: Record<string, number>; historyCount?: number;
   }) => call<void>("resumeChannelSession", { sid, ...config } as unknown as Record<string, unknown>),
 
   fetchHubChannels: () => call<Array<{ id: string; name: string; aliases: string[] }>>("fetchHubChannels"),

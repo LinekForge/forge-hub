@@ -48,11 +48,35 @@ class HubClient {
         .appendingPathComponent(".forge-hub/state/_hub/instance-identities.json")
     static let nextSessionFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".forge-hub/next-session.json")
+    static let apiTokenFile = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".forge-hub/api-token")
 
     // MARK: - Init
 
     init(scanner: SessionScanner) {
         self.scanner = scanner
+    }
+
+    // MARK: - Auth
+
+    func readAuthToken() -> String {
+        if let fromEnv = ProcessInfo.processInfo.environment["HUB_API_TOKEN"], !fromEnv.isEmpty {
+            return fromEnv
+        }
+        guard let data = try? String(contentsOf: Self.apiTokenFile, encoding: .utf8) else {
+            return ""
+        }
+        return data.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func authHeaderArgs() -> [String] {
+        let token = readAuthToken()
+        if token.isEmpty { return [] }
+        return ["-H", "Authorization: Bearer \(token)"]
+    }
+
+    private func curlArgs(_ args: [String]) -> [String] {
+        return args + authHeaderArgs()
     }
 
     // MARK: - Hub Metadata Enrichment
@@ -75,7 +99,7 @@ class HubClient {
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        task.arguments = ["-s", "--connect-timeout", "2", "http://localhost:9900/instances"]
+        task.arguments = curlArgs(["-s", "--connect-timeout", "2", "http://localhost:9900/instances"])
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
         do {
@@ -140,7 +164,7 @@ class HubClient {
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        task.arguments = ["-s", "--connect-timeout", "2", "http://localhost:9900/channels"]
+        task.arguments = curlArgs(["-s", "--connect-timeout", "2", "http://localhost:9900/channels"])
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
         do {
@@ -168,7 +192,7 @@ class HubClient {
         let task = Process()
         let pipe = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        task.arguments = ["-s", "--connect-timeout", "2", "http://localhost:9900/instances"]
+        task.arguments = curlArgs(["-s", "--connect-timeout", "2", "http://localhost:9900/instances"])
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
         do {
@@ -219,10 +243,11 @@ class HubClient {
 
     /// 写 ~/.forge-hub/next-session.json，让 Hub 下次会话启动时读取。
     /// 文件被 Hub 消费后会自行清理，所以每次写都是覆盖。
-    func writeSessionFile(tag: String, description: String, channels: [String], history: [String: Int]) {
+    func writeSessionFile(tag: String, description: String, channels: [String], history: [String: Int], isChannel: Bool = false) {
         var obj: [String: Any] = [:]
         if !tag.isEmpty { obj["tag"] = tag }
         if !description.isEmpty { obj["description"] = description }
+        if isChannel { obj["isChannel"] = true }
         if !channels.isEmpty { obj["channels"] = channels }
         if !history.isEmpty { obj["history"] = history }
         do {
@@ -261,9 +286,9 @@ class HubClient {
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let body: [String: Any] = ["instance": instanceId, "tag": tag]
         let json = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        task.arguments = ["-s", "-X", "POST", "http://localhost:9900/set-tag",
-                          "-H", "Content-Type: application/json",
-                          "-d", String(data: json, encoding: .utf8) ?? "{}"]
+        task.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/set-tag",
+                                   "-H", "Content-Type: application/json",
+                                   "-d", String(data: json, encoding: .utf8) ?? "{}"])
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         do { try task.run() } catch {
@@ -277,9 +302,9 @@ class HubClient {
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let body: [String: Any] = ["instance": instanceId, "description": description]
         let json = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        task.arguments = ["-s", "-X", "POST", "http://localhost:9900/set-description",
-                          "-H", "Content-Type: application/json",
-                          "-d", String(data: json, encoding: .utf8) ?? "{}"]
+        task.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/set-description",
+                                   "-H", "Content-Type: application/json",
+                                   "-d", String(data: json, encoding: .utf8) ?? "{}"])
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         do { try task.run() } catch {
@@ -302,9 +327,9 @@ class HubClient {
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let body: [String: Any] = ["channel": "homeland", "to": "local://operator", "path": sandboxedPath.path]
         let json = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        task.arguments = ["-s", "-X", "POST", "http://localhost:9900/send-file",
-                          "-H", "Content-Type: application/json",
-                          "-d", String(data: json, encoding: .utf8) ?? "{}"]
+        task.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/send-file",
+                                   "-H", "Content-Type: application/json",
+                                   "-d", String(data: json, encoding: .utf8) ?? "{}"])
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         do { try task.run(); task.waitUntilExit() } catch {
@@ -315,9 +340,9 @@ class HubClient {
         msgTask.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let msgBody: [String: Any] = ["content": "[文件] \(sandboxedPath.path)"]
         let msgJson = (try? JSONSerialization.data(withJSONObject: msgBody)) ?? Data()
-        msgTask.arguments = ["-s", "-X", "POST", "http://localhost:9900/homeland/send",
-                             "-H", "Content-Type: application/json",
-                             "-d", String(data: msgJson, encoding: .utf8) ?? "{}"]
+        msgTask.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/homeland/send",
+                                      "-H", "Content-Type: application/json",
+                                      "-d", String(data: msgJson, encoding: .utf8) ?? "{}"])
         msgTask.standardOutput = FileHandle.nullDevice
         msgTask.standardError = FileHandle.nullDevice
         do { try msgTask.run() } catch {}
