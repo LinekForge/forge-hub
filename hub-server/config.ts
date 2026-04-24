@@ -225,6 +225,14 @@ export function setLocked(by: string): void {
 }
 
 export function setUnlocked(): void {
+  // Audit：unlock 事件必须先可追溯，成功后才改变锁状态。
+  try {
+    const entry = JSON.stringify({ ts: new Date().toISOString(), action: "unlock" });
+    fs.appendFileSync(AUDIT_FILE, entry + "\n", "utf-8");
+  } catch (err) {
+    logError(`❌ audit.jsonl 写入失败（unlock 事件未记录）: ${String(err)}`);
+    throw new Error(`audit 不可写，拒绝 unlock: ${String(err)}`);
+  }
   lockState = { locked: false };
   try {
     fs.unlinkSync(LOCK_FILE);
@@ -234,14 +242,6 @@ export function setUnlocked(): void {
     if (!msg.includes("ENOENT")) {
       logError(`lock.json 删除失败: ${msg}`);
     }
-  }
-  // Audit：unlock 事件同样必须可追溯
-  try {
-    const entry = JSON.stringify({ ts: new Date().toISOString(), action: "unlock" });
-    fs.appendFileSync(AUDIT_FILE, entry + "\n", "utf-8");
-  } catch (err) {
-    logError(`❌ audit.jsonl 写入失败（unlock 事件未记录）: ${String(err)}`);
-    throw new Error(`audit 不可写，拒绝 unlock: ${String(err)}`);
   }
   log("🔓 Hub 已解锁");
 }

@@ -76,6 +76,11 @@ function pickDefaultAI(ais: DesignAI[]) {
   return ais.find((ai) => ai.isChannel)?.id ?? ais[0]?.id ?? null;
 }
 
+function defaultConversationSource(ai: DesignAI, nativeMode: boolean) {
+  if (nativeMode) return "jsonl";
+  return ai.channels[0] ?? "jsonl";
+}
+
 function availabilityPreview(ai: DesignAI) {
   if (ai.status !== "online") return "离线";
   if (!ai.isChannel) return `在线 · ${ai.uptime}`;
@@ -302,11 +307,16 @@ export default function App() {
 
   const conversations = useMemo(() => {
     const c: Record<string, ConversationMessage[]> = {};
-    ais.forEach(ai => { c[ai.id] = []; });
+    ais.forEach(ai => {
+      c[`${ai.id}::${defaultConversationSource(ai, nativeMode)}`] = [];
+    });
     // 把 pending approvals 注入为审批消息（带 request_id 供 handleApproval 使用）
     pendingApprovals.forEach(a => {
       const targetId = nativeMode ? (hubToSessionMap[a.from_instance] ?? a.from_instance) : a.from_instance;
-      const targetConvo = c[targetId];
+      const targetAI = ais.find(ai => ai.id === targetId);
+      if (!targetAI) return;
+      const source = defaultConversationSource(targetAI, nativeMode);
+      const targetConvo = c[`${targetId}::${source}`];
       if (targetConvo) {
         targetConvo.push({
           id: a.request_id,

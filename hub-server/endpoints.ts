@@ -122,8 +122,6 @@ function trustedDashboardOrigins(url: URL): Set<string> {
   origins.add(`${url.protocol}//localhost${port}`);
   origins.add(`${url.protocol}//127.0.0.1${port}`);
   origins.add(`${url.protocol}//[::1]${port}`);
-  origins.add("http://localhost:5173");
-  origins.add("http://127.0.0.1:5173");
   const configured = process.env.FORGE_HUB_DASHBOARD_ORIGINS ?? "";
   for (const origin of configured.split(",").map((entry) => entry.trim()).filter(Boolean)) {
     origins.add(origin);

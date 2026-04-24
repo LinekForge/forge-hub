@@ -23,6 +23,7 @@ class WebViewBridge: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame else { return }
         guard let body = message.body as? [String: Any],
               let action = body["action"] as? String,
               let callbackId = body["callbackId"] as? String else {

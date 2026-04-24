@@ -1114,7 +1114,7 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
   };
 
   const handleApproval = async (msgId: string | number, yes: boolean) => {
-    const msg = (convos[activeId] || []).find((m) => m.id === msgId);
+    const msg = messages.find((m) => m.id === msgId);
     if (msg && msg.request_id) {
       const ok = yes
         ? await approveFromDashboard(msg.request_id)
@@ -1123,8 +1123,8 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
         console.warn(`[hub] 审批失败: ${msg.request_id}`);
         setLocalConvos(prev => ({
           ...prev,
-          [activeId]: [
-            ...(prev[activeId] || []),
+          [convoKey]: [
+            ...(prev[convoKey] || []),
             {
               id: `approval-failed-${Date.now()}`,
               dir: 'in',
@@ -1138,8 +1138,8 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
 
       setLocalConvos(prev => ({
         ...prev,
-        [activeId]: [
-          ...(prev[activeId] || []).filter(m => m.id !== msgId),
+        [convoKey]: [
+          ...(prev[convoKey] || []).filter(m => m.id !== msgId),
           { id: Date.now(), dir: 'in', text: yes ? '✅ 已批准' : '❌ 已拒绝', time: timeStr() }
         ]
       }));
@@ -1148,7 +1148,7 @@ function ChatMode({ activeId, hubVersion, ais, lastMessages, conversations, chan
   };
 
   if (!ai) return null;
-  const pending = (convos[activeId] || []).filter(m => m.dir === 'approval');
+  const pending = messages.filter(m => m.dir === 'approval');
 
   return (
     <>

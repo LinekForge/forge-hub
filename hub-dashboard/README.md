@@ -36,6 +36,12 @@ Vite dev server 默认跑在 `http://localhost:5173`，并通过 `vite.config.ts
 - `/api/*` 转到 `http://localhost:9900`
 - `/ws` 转到 `ws://localhost:9900`
 
+如果 Hub 开启了 `HUB_API_TOKEN`，并且浏览器直接从 Vite dev server 使用 Dashboard cookie 访问 Hub，请显式配置：
+
+```bash
+FORGE_HUB_DASHBOARD_ORIGINS=http://localhost:5173
+```
+
 ## 构建
 
 ```bash
