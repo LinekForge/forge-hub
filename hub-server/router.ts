@@ -15,6 +15,13 @@ export interface RouteResult {
   targeted: boolean;
   /** 去掉 @前缀 后的消息内容 */
   content: string;
+  /** broadcast 模式下，@mention 的接手者（所有人收到消息，handler 负责回复） */
+  handlers?: string[];
+  /** fail-closed 时返回明确失败原因，调用方决定如何反馈给用户 */
+  failure?: {
+    kind: "unresolved_mention" | "ambiguous_mention" | "ambiguous_route";
+    detail: string;
+  };
 }
 
 // ── @提及解析 ───────────────────────────────────────────────────────────────
@@ -37,12 +44,27 @@ function isTrailingMentionBoundary(content: string, endIndex: number): boolean {
 
 function buildMentionCandidates(
   instances: Map<string, ConnectedInstance>,
-): MentionCandidate[] {
+): { candidates: MentionCandidate[]; ambiguousTags: string[] } {
   const candidates: MentionCandidate[] = [];
+  const tagCounts = new Map<string, number>();
+
+  for (const instance of instances.values()) {
+    if (!instance.tag) continue;
+    tagCounts.set(instance.tag, (tagCounts.get(instance.tag) ?? 0) + 1);
+  }
+
+  const descCounts = new Map<string, number>();
+  for (const instance of instances.values()) {
+    if (!instance.description) continue;
+    descCounts.set(instance.description, (descCounts.get(instance.description) ?? 0) + 1);
+  }
 
   for (const [id, inst] of instances) {
-    if (inst.tag) {
+    if (inst.tag && tagCounts.get(inst.tag) === 1) {
       candidates.push({ name: inst.tag, instanceId: id, kind: "tag" });
+    }
+    if (inst.description && descCounts.get(inst.description) === 1) {
+      candidates.push({ name: inst.description, instanceId: id, kind: "tag" });
     }
     candidates.push({ name: id, instanceId: id, kind: "id" });
   }
@@ -54,7 +76,31 @@ function buildMentionCandidates(
     return a.kind === "tag" ? -1 : 1;
   });
 
-  return candidates;
+  const ambiguousTags = [...tagCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([tag]) => tag)
+    .sort((a, b) => b.length - a.length);
+
+  return { candidates, ambiguousTags };
+}
+
+function readMentionToken(
+  content: string,
+  atIndex: number,
+): { token: string; endIndex: number } | null {
+  const startIndex = atIndex + 1;
+  if (startIndex >= content.length) return null;
+
+  let endIndex = startIndex;
+  while (endIndex < content.length && !isTrailingMentionBoundary(content, endIndex)) {
+    endIndex++;
+  }
+
+  if (endIndex === startIndex) return null;
+  return {
+    token: content.slice(startIndex, endIndex),
+    endIndex,
+  };
 }
 
 /**
@@ -64,9 +110,11 @@ function buildMentionCandidates(
 function parseTargets(
   content: string,
   instances: Map<string, ConnectedInstance>,
-): { targets: string[]; rest: string } {
-  const candidates = buildMentionCandidates(instances);
+): { targets: string[]; rest: string; unresolvedMentions: string[]; ambiguousMentions: string[] } {
+  const { candidates, ambiguousTags } = buildMentionCandidates(instances);
   const targets = new Set<string>();
+  const unresolvedMentions: string[] = [];
+  const ambiguousMentions: string[] = [];
   let rest = "";
 
   for (let index = 0; index < content.length; ) {
@@ -84,14 +132,34 @@ function parseTargets(
       );
     });
 
-    if (!matched) {
-      rest += content[index] ?? "";
-      index++;
+    if (matched) {
+      targets.add(matched.instanceId);
+      index += 1 + matched.name.length;
       continue;
     }
 
-    targets.add(matched.instanceId);
-    index += 1 + matched.name.length;
+    const ambiguous = ambiguousTags.find((tag) => {
+      const endIndex = index + 1 + tag.length;
+      return (
+        content.startsWith(tag, index + 1) &&
+        isTrailingMentionBoundary(content, endIndex)
+      );
+    });
+    if (ambiguous) {
+      ambiguousMentions.push(ambiguous);
+      index += 1 + ambiguous.length;
+      continue;
+    }
+
+    const token = readMentionToken(content, index);
+    if (token) {
+      unresolvedMentions.push(token.token);
+      index = token.endIndex;
+      continue;
+    }
+
+    rest += content[index] ?? "";
+    index++;
   }
 
   rest = rest
@@ -101,7 +169,12 @@ function parseTargets(
     .replace(/^[,，.。!?！？;；:：、\s]+/, "")
     .replace(/[,，.。!?！？;；:：、\s]+$/, "");
 
-  return { targets: [...targets], rest };
+  return {
+    targets: [...targets],
+    rest,
+    unresolvedMentions,
+    ambiguousMentions,
+  };
 }
 
 // ── Route ───────────────────────────────────────────────────────────────────
@@ -118,33 +191,67 @@ export function route(
     return { targets: [], targeted: false, content: msg.content };
   }
 
-  // Parse @mentions anywhere in message
-  const { targets: requestedTargets, rest } = parseTargets(msg.content, instances);
+  // Dashboard 显式指定了接手实例时，优先交给它。
+  // 这里的语义不是 @mention，而是"当前公共流由谁接手"。
+  if (msg.targetInstanceId) {
+    if (instances.has(msg.targetInstanceId)) {
+      return {
+        targets: [msg.targetInstanceId],
+        targeted: true,
+        content: msg.content,
+      };
+    }
+    return { targets: [], targeted: true, content: msg.content };
+  }
 
-  // Has @prefix → targeted delivery (match by name first, then by id)
-  if (requestedTargets.length > 0) {
+  // Parse @mentions anywhere in message
+  const {
+    targets: requestedTargets,
+    rest,
+    unresolvedMentions,
+    ambiguousMentions,
+  } = parseTargets(msg.content, instances);
+
+  if (ambiguousMentions.length > 0) {
     return {
-      targets: requestedTargets,
+      targets: [],
       targeted: true,
       content: rest,
+      failure: {
+        kind: "ambiguous_mention",
+        detail: `@${ambiguousMentions.join(", @")} 匹配到多个实例，请先修正重复 tag`,
+      },
     };
   }
 
-  // No @prefix, single instance → direct
-  if (instanceIds.length === 1) {
-    return { targets: instanceIds, targeted: false, content: msg.content };
-  }
-
-  // No @prefix, multiple instances → primary or broadcast
-  if (config.primary_instance && instances.has(config.primary_instance)) {
+  if (unresolvedMentions.length > 0) {
     return {
-      targets: [config.primary_instance],
-      targeted: false,
-      content: msg.content,
+      targets: [],
+      targeted: true,
+      content: rest,
+      failure: {
+        kind: "unresolved_mention",
+        detail: `未找到实例 @${unresolvedMentions.join(", @")}`,
+      },
     };
   }
 
-  // No primary configured → broadcast to all
+  // Has @mention → route based on mention_mode
+  if (requestedTargets.length > 0) {
+    const mentionMode = config.mention_mode ?? "direct";
+    if (mentionMode === "direct") {
+      return { targets: requestedTargets, targeted: true, content: rest };
+    }
+    // broadcast: all subscribers receive, handlers marked
+    return {
+      targets: instanceIds,
+      targeted: true,
+      content: rest,
+      handlers: requestedTargets,
+    };
+  }
+
+  // No @mention → broadcast to all subscribers
   return { targets: instanceIds, targeted: false, content: msg.content };
 }
 

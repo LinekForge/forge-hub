@@ -20,6 +20,15 @@ import {
   listEngineSchedules,
   updateEnginePauseConfig,
 } from "./engine.js";
+import {
+  formatInstanceChannels,
+  formatInstanceLabel,
+  formatInstanceName,
+  formatInstanceTag,
+  formatKnownState,
+  partitionInstances,
+  timeSince,
+} from "./hub-instance-view.js";
 import { resolveSelfTestHarnessPath } from "./self-test.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -102,11 +111,15 @@ async function hubStatus() {
   const data = await hubGet("/health") as {
     hub: { version: string; uptime: number; memory_mb: number; lock: { locked: boolean } };
     channels: Record<string, { loaded: boolean; health_status?: string; consecutiveFailures?: number; lastError?: string; messagesIn: number; messagesOut: number }>;
-    instances: { id: string; tag?: string; description?: string; channels?: string[] }[];
+    instances: { id: string; tag?: string; description?: string; isChannel?: boolean; channels?: string[]; presence?: "live" | "known"; connectedAt?: string; lastSeenAt?: string }[];
   };
+  const { live, known } = partitionInstances(data.instances);
   console.log(`Forge Hub v${data.hub.version}${data.hub.lock.locked ? " 🔒 已锁定" : ""}`);
   console.log(`运行 ${data.hub.uptime}s · ${data.hub.memory_mb}MB`);
-  console.log(`在线实例: ${data.instances.length}${data.instances.length > 0 ? ` (${data.instances.map(i => i.description ?? i.tag ?? i.id).join(", ")})` : ""}`);
+  console.log(`在线实例: ${live.length}${live.length > 0 ? ` (${live.map((instance) => formatInstanceName(instance)).join(", ")})` : ""}`);
+  if (known.length > 0) {
+    console.log(`已知但不在线: ${known.length} (${known.map((instance) => formatInstanceName(instance)).join(", ")})`);
+  }
   const chEntries = Object.entries(data.channels);
   if (chEntries.length === 0) {
     console.log("已加载通道: 0");
@@ -186,8 +199,9 @@ async function hubHealth() {
       health_status?: "healthy" | "degraded" | "unhealthy" | "unknown";
       consecutiveFailures?: number; lastSuccessAt?: string; lastFailureAt?: string;
     }>;
-    instances: { id: string; tag?: string; description?: string; channels?: string[]; connectedAt: string }[];
+    instances: { id: string; tag?: string; description?: string; isChannel?: boolean; channels?: string[]; presence?: "live" | "known"; connectedAt?: string; lastSeenAt?: string }[];
   };
+  const { live, known } = partitionInstances(data.instances);
 
   console.log(`Forge Hub v${data.hub.version} · PID ${data.hub.pid} · ${data.hub.memory_mb}MB`);
   console.log(`运行 ${data.hub.uptime}s · 启动于 ${data.hub.started_at}`);
@@ -211,36 +225,43 @@ async function hubHealth() {
   }
   console.log("");
 
-  console.log(`在线实例: ${data.instances.length}`);
-  for (const i of data.instances) {
-    const label = i.description ? `${i.description}` : i.id;
-    const tag = i.tag ? ` @${i.tag}` : "";
-    console.log(`  ${label}${tag}`);
+  console.log(`在线实例: ${live.length}`);
+  for (const instance of live) {
+    console.log(`  ${formatInstanceName(instance)}${formatInstanceTag(instance)}`);
   }
-}
-
-function timeSince(iso: string): string {
-  const sec = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-  if (sec < 60) return `${sec}s前`;
-  if (sec < 3600) return `${Math.round(sec / 60)}m前`;
-  return `${Math.round(sec / 3600)}h前`;
+  if (known.length > 0) {
+    console.log("");
+    console.log(`已知但不在线: ${known.length}`);
+    for (const instance of known) {
+      console.log(`  ${formatInstanceName(instance)}${formatInstanceTag(instance)} · ${formatKnownState(instance)}`);
+    }
+  }
 }
 
 async function hubPeers() {
   const data = await hubGet("/instances") as {
-    instances: { id: string; tag?: string; description?: string; channels?: string[]; connectedAt: string; summary?: string }[];
+    instances: { id: string; tag?: string; description?: string; isChannel?: boolean; channels?: string[]; presence?: "live" | "known"; connectedAt?: string; lastSeenAt?: string; summary?: string }[];
   };
-  if (data.instances.length === 0) {
-    console.log("没有在线实例");
+  const { live, known } = partitionInstances(data.instances);
+  if (live.length === 0 && known.length === 0) {
+    console.log("没有在线或已知实例");
     return;
   }
-  for (const i of data.instances) {
-    const desc = i.description ? `${i.description}` : "";
-    const tag = i.tag ?? "";
-    const label = desc && tag ? ` (${desc}@${tag})` : desc ? ` (${desc})` : tag ? ` (@${tag})` : "";
-    const ch = i.channels ? ` [${i.channels.join(", ")}]` : " [all]";
-    const summary = i.summary ? ` — ${i.summary}` : "";
-    console.log(`${i.id}${label}${ch}${summary}`);
+  if (live.length > 0) {
+    console.log("在线实例:");
+    for (const instance of live) {
+      const summary = instance.summary ? ` — ${instance.summary}` : "";
+      console.log(`${instance.id}${formatInstanceLabel(instance)} [${formatInstanceChannels(instance)}]${summary}`);
+    }
+  } else {
+    console.log("在线实例: 0");
+  }
+  if (known.length > 0) {
+    console.log("");
+    console.log("已知但不在线:");
+    for (const instance of known) {
+      console.log(`${instance.id}${formatInstanceLabel(instance)} [${formatKnownState(instance)}]`);
+    }
   }
 }
 
@@ -511,13 +532,30 @@ async function resolveInstanceId(args: string[]): Promise<{ instanceId: string; 
 
   if (tag) {
     // Find instance by tag OR id (L1: @<id> is a valid manual override, not only @<tag>)
-    const data = await hubGet("/instances") as { instances: { id: string; tag?: string }[] };
-    const inst = data.instances.find((i) => i.tag === tag || i.id === tag);
+    const data = await hubGet("/instances") as { instances: { id: string; tag?: string; isChannel?: boolean; presence?: "live" | "known"; connectedAt?: string; lastSeenAt?: string }[] };
+    const { live, known } = partitionInstances(data.instances);
+    const liveMatches = live.filter((instance) => instance.tag === tag || instance.id === tag);
+    const exactLive = liveMatches.find((instance) => instance.id === tag);
+    const inst = exactLive ?? liveMatches[0];
+    if (!exactLive && liveMatches.length > 1) {
+      const ids = liveMatches.map((instance) => `${instance.id}${instance.tag ? `(@${instance.tag})` : ""}`).join(", ");
+      die(`@${tag} 匹配到多个在线实例：${ids}。请先修正重复 tag，或直接用 @实例ID 指定。`);
+    }
     if (!inst) {
-      const ids = data.instances.map((i) => i.id).join(", ");
+      const knownMatches = known.filter((instance) => instance.tag === tag || instance.id === tag);
+      const exactKnown = knownMatches.find((instance) => instance.id === tag);
+      const knownMatch = exactKnown ?? knownMatches[0];
+      const ids = live.map((instance) => instance.id).join(", ");
+      if (!exactKnown && knownMatches.length > 1) {
+        const labels = knownMatches.map((instance) => `${instance.id}${instance.tag ? `(@${instance.tag})` : ""}`).join(", ");
+        die(`@${tag} 匹配到多个离线实例：${labels}。请先修正重复 tag。`);
+      }
+      if (knownMatch) {
+        die(`@${tag} 当前不在线（${formatKnownState(knownMatch)}）。在线实例: ${ids || "无"}`);
+      }
       die(`找不到 @${tag}。在线实例: ${ids || "无"}`);
     }
-    return { instanceId: inst!.id, rest };
+    return { instanceId: inst.id, rest };
   }
 
   // Auto-detect current instance
@@ -529,12 +567,18 @@ async function resolveInstanceId(args: string[]): Promise<{ instanceId: string; 
 async function hubListen(args: string[]) {
   // No args: show current subscription for all online instances
   if (args.length === 0) {
-    const data = await hubGet("/instances") as { instances: { id: string; tag?: string; description?: string; channels?: string[] }[] };
-    if (data.instances.length === 0) { console.log("没有在线实例"); return; }
-    for (const i of data.instances) {
-      const label = i.description && i.tag ? `${i.description}@${i.tag}` : i.description ?? i.tag ?? "";
-      const ch = i.channels ? i.channels.join(", ") : "all";
-      console.log(`${i.id}${label ? ` (${label})` : ""} → [${ch}]`);
+    const data = await hubGet("/instances") as { instances: { id: string; tag?: string; description?: string; isChannel?: boolean; channels?: string[]; presence?: "live" | "known"; connectedAt?: string; lastSeenAt?: string }[] };
+    const { live, known } = partitionInstances(data.instances);
+    if (live.length === 0) {
+      console.log("没有在线实例");
+      if (known.length > 0) {
+        console.log(`已知但不在线: ${known.map((instance) => `${instance.id} (${formatKnownState(instance)})`).join(", ")}`);
+      }
+      return;
+    }
+    for (const instance of live) {
+      const label = instance.description && instance.tag ? `${instance.description}@${instance.tag}` : instance.description ?? instance.tag ?? "";
+      console.log(`${instance.id}${label ? ` (${label})` : ""} → [${formatInstanceChannels(instance)}]`);
     }
     return;
   }
@@ -556,8 +600,9 @@ async function hubListen(args: string[]) {
     console.log(`✅ ${instanceId} → [${label}]`);
   } else {
     // L4: tell user what's actually registered so they can `@<id>` manually
-    const data = await hubGet("/instances") as { instances: { id: string }[] };
-    const ids = data.instances.map((i) => i.id).join(", ");
+    const data = await hubGet("/instances") as { instances: { id: string; presence?: "live" | "known"; connectedAt?: string }[] };
+    const { live } = partitionInstances(data.instances);
+    const ids = live.map((instance) => instance.id).join(", ");
     die(`设置失败（${instanceId} 未注册）。在线: ${ids || "无"}\n手动指定: fh hub listen @<id> <ch...>`);
   }
 }
@@ -567,7 +612,13 @@ async function hubListen(args: string[]) {
 const HUB_STATE = path.join(process.env.HOME ?? "~", ".forge-hub", "state");
 const AUDIT_FILE = path.join(process.env.HOME ?? "~", ".forge-hub", "audit.jsonl");
 
-function loadAllowlist(channel: string): { allowed: { id: string; nickname: string }[]; auto_allow_next?: boolean } {
+type HubAllowlist = {
+  allowed: { id: string; nickname: string }[];
+  auto_allow_next?: boolean;
+  approval_owner_id?: string;
+};
+
+function loadAllowlist(channel: string): HubAllowlist {
   const filePath = path.join(HUB_STATE, channel, "allowlist.json");
   if (!fs.existsSync(filePath)) return { allowed: [] };
   // Fail-closed：损坏的 allowlist **不能**静默返空 —— 那样 allowlist 层全失守，
@@ -579,11 +630,13 @@ function loadAllowlist(channel: string): { allowed: { id: string; nickname: stri
   }
 }
 
-function saveAllowlist(channel: string, allowlist: { allowed: { id: string; nickname: string }[] }): void {
+function saveAllowlist(channel: string, allowlist: HubAllowlist): void {
   const dir = path.join(HUB_STATE, channel);
   fs.mkdirSync(dir, { recursive: true });
   try { fs.chmodSync(dir, 0o700); } catch { /* ignore — non-fatal */ }
-  const clean = { allowed: allowlist.allowed };
+  const clean: HubAllowlist = { allowed: allowlist.allowed };
+  if (typeof allowlist.auto_allow_next === "boolean") clean.auto_allow_next = allowlist.auto_allow_next;
+  if (allowlist.approval_owner_id) clean.approval_owner_id = allowlist.approval_owner_id;
   const allowlistPath = path.join(dir, "allowlist.json");
   const tmp = `${allowlistPath}.tmp.${process.pid}`;
   try {
@@ -604,6 +657,17 @@ function appendAudit(action: string, channel: string, id: string, nickname: stri
     console.error(`❌ 审计日志写入失败: ${String(err)}`);
     die("审计日志不可写，授权操作中止");
   }
+}
+
+function resolveAllowlistEntry(allowlist: HubAllowlist, query: string): { id: string; nickname: string } | null {
+  const exactId = allowlist.allowed.find((entry) => entry.id === query);
+  if (exactId) return exactId;
+
+  const nicknameMatches = allowlist.allowed.filter((entry) => entry.nickname === query);
+  if (nicknameMatches.length > 1) {
+    die(`nickname "${query}" 匹配到多条授权，请改用 sender_id 指定`);
+  }
+  return nicknameMatches[0] ?? null;
 }
 
 // Touch ID 验证策略：
@@ -690,6 +754,9 @@ async function hubAllow(args: string[]) {
   saveAllowlist(channel, allowlist);
   appendAudit("allow", channel, id, nickname);
   console.log(`✅ 已授权: ${nickname} (${id}) → ${channel}`);
+  if (!allowlist.approval_owner_id) {
+    console.log(`⚠️  ${channel} 还没有审批 owner。下一步运行: fh hub owner ${channel} ${id}`);
+  }
 }
 
 async function hubRevoke(args: string[]) {
@@ -705,6 +772,7 @@ async function hubRevoke(args: string[]) {
   }
 
   const allowlist = loadAllowlist(channel);
+  const removedEntries = allowlist.allowed.filter((e) => e.id === query || e.nickname === query);
   const before = allowlist.allowed.length;
   allowlist.allowed = allowlist.allowed.filter((e) => e.id !== query && e.nickname !== query);
   const removed = before - allowlist.allowed.length;
@@ -712,6 +780,11 @@ async function hubRevoke(args: string[]) {
   if (removed === 0) {
     console.log(`未找到: ${query} 不在 ${channel} allowlist 中`);
     return;
+  }
+
+  if (allowlist.approval_owner_id && removedEntries.some((entry) => entry.id === allowlist.approval_owner_id)) {
+    allowlist.approval_owner_id = undefined;
+    console.log(`⚠️  已同时清除 ${channel} 的审批 owner，请重新运行 fh hub owner ${channel} <id> 设置。`);
   }
 
   saveAllowlist(channel, allowlist);
@@ -731,8 +804,10 @@ function hubAllowlist(args: string[]) {
       for (const ch of channels) {
         const al = loadAllowlist(ch);
         console.log(`\n${ch} (${al.allowed.length}):`);
+        console.log(`  owner: ${al.approval_owner_id ?? "(未设置)"}`);
         for (const e of al.allowed) {
-          console.log(`  ${e.nickname} — ${e.id}`);
+          const ownerMark = al.approval_owner_id === e.id ? " [owner]" : "";
+          console.log(`  ${e.nickname} — ${e.id}${ownerMark}`);
         }
       }
     } catch {}
@@ -742,11 +817,60 @@ function hubAllowlist(args: string[]) {
   const al = loadAllowlist(channel);
   if (al.allowed.length === 0) {
     console.log(`${channel} allowlist 为空`);
+    console.log(`owner: ${al.approval_owner_id ?? "(未设置)"}`);
     return;
   }
+  console.log(`owner: ${al.approval_owner_id ?? "(未设置)"}`);
   for (const e of al.allowed) {
-    console.log(`${e.nickname} — ${e.id}`);
+    const ownerMark = al.approval_owner_id === e.id ? " [owner]" : "";
+    console.log(`${e.nickname} — ${e.id}${ownerMark}`);
   }
+}
+
+async function hubOwner(args: string[]) {
+  const [channel, query] = args;
+  if (!channel) die("用法: fh hub owner <channel> [id|nickname|--clear]");
+
+  const allowlist = loadAllowlist(channel);
+  if (!query) {
+    const owner = allowlist.approval_owner_id
+      ? resolveAllowlistEntry(allowlist, allowlist.approval_owner_id)
+      : null;
+    if (!allowlist.approval_owner_id) {
+      console.log(`${channel} 审批 owner: (未设置)`);
+      return;
+    }
+    if (!owner) {
+      console.log(`${channel} 审批 owner: ${allowlist.approval_owner_id} (已不在 allowlist 中)`);
+      return;
+    }
+    console.log(`${channel} 审批 owner: ${owner.nickname} — ${owner.id}`);
+    return;
+  }
+
+  const verified = await touchIdVerify(`Forge Hub 审批 owner: 更新 ${channel}`);
+  if (!verified) {
+    console.log("❌ 验证失败，owner 未修改");
+    return;
+  }
+
+  if (query === "--clear") {
+    allowlist.approval_owner_id = undefined;
+    saveAllowlist(channel, allowlist);
+    appendAudit("clear_owner", channel, "", "");
+    console.log(`✅ 已清除 ${channel} 审批 owner`);
+    return;
+  }
+
+  const entry = resolveAllowlistEntry(allowlist, query);
+  if (!entry) {
+    die(`找不到 ${query}。先运行 fh hub allow ${channel} <id> <nickname> 把它加入 allowlist。`);
+  }
+
+  allowlist.approval_owner_id = entry.id;
+  saveAllowlist(channel, allowlist);
+  appendAudit("set_owner", channel, entry.id, entry.nickname);
+  console.log(`✅ ${channel} 审批 owner → ${entry.nickname} (${entry.id})`);
 }
 
 // ── Hub Presets ────────────────────────────────────────────────────────────
@@ -975,9 +1099,13 @@ async function hubSetup(): Promise<void> {
     console.log(`  approval_channels: [${(config.approval_channels as string[]).join(", ")}]`);
   }
 
-  console.log("\n下一步: 授权你的第一个联系人（从 hub log 里找到 sender_id）:");
+  console.log("\n下一步:");
+  console.log("1. 授权你的联系人或群（从 hub log 里找到 sender_id）:");
   console.log("  fh hub allow <channel> <id> <nickname>\n");
+  console.log("2. 显式设置审批 owner（不要依赖 allowlist 顺序）:");
+  console.log("  fh hub owner <channel> <id|nickname>\n");
   console.log("例: fh hub allow wechat ou_xxxxx 小明");
+  console.log("    fh hub owner wechat 小明");
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -1007,8 +1135,9 @@ if (!domain) {
   fh hub summary <text>  设置实例描述
   fh hub listen              查看当前通道订阅
   fh hub listen [@TAG] <ch...>  设置通道订阅（wx/tg/im/fs/all）
-  fh hub allow <ch> <id> <nick>  授权联系人（需 Touch ID）
+  fh hub allow <ch> <id> <nick>  授权联系人或群（需 Touch ID）
   fh hub revoke <ch> <id|nick>   撤销授权（需 Touch ID）
+  fh hub owner <ch> [id|nick|--clear]  查看或设置审批 owner
   fh hub allowlist [ch]          查看授权列表
   fh hub preset list             查看通道预设
   fh hub preset add <n> <ch:N>   添加预设（如 wx:200 tg:50）
@@ -1044,6 +1173,7 @@ if (domain === "hub") {
     case "listen": await hubListen(rest); break;
     case "allow": await hubAllow(rest); break;
     case "revoke": await hubRevoke(rest); break;
+    case "owner": await hubOwner(rest); break;
     case "allowlist": hubAllowlist(rest); break;
     case "preset": {
       const sub = rest[0];

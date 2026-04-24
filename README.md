@@ -1,8 +1,9 @@
 # Forge Hub
 
-**让 Claude Code 一次接入微信、Telegram、飞书、iMessage**——在手机上和它聊天，远程批准它的操作，不用守在电脑前。
+**让 Claude Code 一次接入微信、Telegram、飞书、iMessage，再加一条本地 Homeland 通道**——手机远程聊，浏览器本地看实例和审批，不用守在电脑前。
 
-- **4 通道** — 微信 / Telegram / 飞书 / iMessage，一套 Hub 全通
+- **5 通道** — 微信 / Telegram / 飞书 / iMessage / Homeland（本地）
+- **本地 Dashboard** — 浏览器里看实例、审批队列和 Homeland 对话
 - **远程审批** — Claude 要 `rm -rf`，你不在电脑前？手机上 `yes xxxxx` 或 `no xxxxx` 批准/拒绝
 - **多实例路由** — 多个 Claude Code 窗口同时跑，`@tag` 找对的那个，互不串线
 - **紧急锁定** — 任意通道发自定暗号，立即冻结所有远程
@@ -13,9 +14,15 @@
 
 ```
 微信 / TG / 飞书 / iMessage  ─▶  Hub Server (本地常驻)  ─▶  Claude Code (MCP)
-                                       ▲                          │
-                                       └──── reply / approve ─────┘
+Homeland / Dashboard（本地） ─▶         ▲                          │
+                                        └──── reply / approve ─────┘
 ```
+
+> [!NOTE]
+> `hub-dashboard/` 是本地 Dashboard。源码工作区里可以单独 `bun run build`；而 `forge-hub install` 现在也会自动部署并构建 dashboard 产物，Hub Server 启动后可直接静态托管。
+
+> [!NOTE]
+> 如果 Hub 开启了 `HUB_API_TOKEN`，Dashboard 仍可直接打开静态页；第一次读取实例、审批或 Homeland 数据时，浏览器会提示输入 token。认证成功后，Hub 会写入一个 HttpOnly cookie，后续 API 和 SSE 会自动复用。
 
 ## 前置要求
 
@@ -46,7 +53,7 @@ cd ~/forge-hub && bun cli.ts install
 
 </details>
 
-`forge-hub install` 部署 hub-server、hub-client、launchd plist、MCP 注册。
+`forge-hub install` 部署 hub-server、hub-client、hub-dashboard、launchd plist、MCP 注册。
 
 > [!NOTE]
 > [Forge Engine](forge-engine/) 目前是 **experimental / manual setup**：仓库里已经带源码、MCP server 和 `fh engine ...` CLI，但 **不在 `forge-hub install` 的默认部署面里**。想启用的话，按 [forge-engine/README.md](forge-engine/README.md) 单独注册。
@@ -227,6 +234,7 @@ forge-hub install / uninstall / doctor
 | [架构.md](架构.md) | 组件关系 + 消息流 + 通道矩阵 |
 | [运行时状态.md](运行时状态.md) | 目录结构 + 配置 / 状态文件 schema |
 | [forge-engine/README.md](forge-engine/README.md) | Forge Engine 的实验性手动配置 |
+| [hub-dashboard/README.md](hub-dashboard/README.md) | 本地 Dashboard（实验性）的构建、接入与运行方式 |
 | [hub-docs/channel-plugin-guide.md](hub-docs/channel-plugin-guide.md) | 写新通道插件 |
 | [examples/echo.ts](examples/echo.ts) | 最小通道示例（~150 行） |
 | [examples/pretooluse-guard.sh](examples/pretooluse-guard.sh) | 远程审批 hook 示例 |

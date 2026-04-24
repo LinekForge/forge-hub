@@ -220,11 +220,36 @@ export function startPendingTtlSweep(): void {
 export function matchesApprovalOwner(
   channel: string,
   senderId: string,
-  allowed: { id: string }[],
+  ownerId?: string,
 ): boolean {
-  const owner = allowed[0];
-  if (!owner?.id) return false;
-  return isAuthorizedSenderMatch(channel, senderId, owner.id);
+  if (!ownerId) return false;
+  return isAuthorizedSenderMatch(channel, senderId, ownerId);
+}
+
+function resolveApprovalOwnerConfig(
+  channel: string,
+): { ok: true; ownerId: string } | { ok: false; error: string } {
+  const allowlistResult = readAllowlist(channel);
+  if (!allowlistResult.ok) {
+    return { ok: false, error: allowlistResult.error };
+  }
+  const ownerId = allowlistResult.allowlist.approval_owner_id?.trim();
+  if (!ownerId) {
+    return {
+      ok: false,
+      error: `approval owner not configured for ${channel}; run 'fh hub owner ${channel} <id>'`,
+    };
+  }
+  const ownerExists = allowlistResult.allowlist.allowed.some((entry) =>
+    isAuthorizedSenderMatch(channel, ownerId, entry.id),
+  );
+  if (!ownerExists) {
+    return {
+      ok: false,
+      error: `approval owner ${ownerId} is not present in ${channel} allowlist`,
+    };
+  }
+  return { ok: true, ownerId };
 }
 
 /**
@@ -233,19 +258,14 @@ export function matchesApprovalOwner(
  * 区分"文件不存在（正常 disable）" vs "读取失败（配置损坏）"：后者 logError 让定位不绕弯。
  */
 export async function resolveApprovalRecipient(channel: string): Promise<string | null> {
-  const allowlistResult = readAllowlist(channel);
-  if (!allowlistResult.ok) {
-    const msg = `resolveApprovalRecipient(${channel}): ${allowlistResult.error}`;
-    if (allowlistResult.error.startsWith("allowlist not found:")) log(msg);
+  const ownerResult = resolveApprovalOwnerConfig(channel);
+  if (!ownerResult.ok) {
+    const msg = `resolveApprovalRecipient(${channel}): ${ownerResult.error}`;
+    if (ownerResult.error.startsWith("allowlist not found:")) log(msg);
     else logError(msg);
     return null;
   }
-  const id = allowlistResult.allowlist.allowed[0]?.id;
-  if (!id) {
-    log(`resolveApprovalRecipient(${channel}): allowlist 里 allowed[0].id 为空`);
-    return null;
-  }
-  return id;
+  return ownerResult.ownerId;
 }
 
 /**
@@ -263,13 +283,13 @@ export type OwnerCheckResult =
   | { ok: false; error: string };
 
 export function isApprovalOwner(channel: string, fromId: string): OwnerCheckResult {
-  const allowlistResult = readAllowlist(channel);
-  if (!allowlistResult.ok) {
-    return { ok: false, error: allowlistResult.error };
+  const ownerResult = resolveApprovalOwnerConfig(channel);
+  if (!ownerResult.ok) {
+    return { ok: false, error: ownerResult.error };
   }
   return {
     ok: true,
-    isOwner: matchesApprovalOwner(channel, fromId, allowlistResult.allowlist.allowed),
+    isOwner: matchesApprovalOwner(channel, fromId, ownerResult.ownerId),
   };
 }
 
@@ -311,4 +331,84 @@ export async function sendApprovalAck(
   } catch (err) {
     logError(`sendApprovalAck: ${channel}:${toId} 发送抛错: ${String(err)}`);
   }
+}
+
+// ── Dashboard 审批处理 ────────────────────────────────────────────────────
+
+export type ResolveResult =
+  | { ok: true; action: string }
+  | { ok: false; error: string; status: number };
+
+function clearPendingApproval(requestId: string, pending: PendingPermission): void {
+  pendingPermissions.delete(requestId);
+  idLookup.delete(pending.yes_id);
+  idLookup.delete(pending.no_id);
+  savePendingToDisk();
+}
+
+export function resolveApprovalFromDashboard(
+  requestId: string,
+  behavior: "allow" | "deny",
+): ResolveResult {
+  const pending = pendingPermissions.get(requestId);
+  if (!pending) {
+    return { ok: false, error: "pending not found", status: 404 };
+  }
+
+  const instance = getInstances().get(pending.from_instance);
+  if (!instance) {
+    log(`⚠️  Dashboard 审批 ${requestId} → ${behavior}，但实例 ${pending.from_instance} 已离线`);
+    return { ok: false, error: `instance ${pending.from_instance} is offline`, status: 409 };
+  }
+
+  const sendStatus = instance.send({
+    type: "permission_response",
+    channel: "homeland",
+    from: "Operator",
+    fromId: "local://operator",
+    content: JSON.stringify({ request_id: requestId, behavior }),
+    targeted: true,
+    raw: {},
+  });
+  if (sendStatus <= 0) {
+    const reason = sendStatus === 0 ? "dropped" : "backpressure";
+    log(`⚠️  Dashboard 审批 ${requestId} → ${behavior} 发送未确认（${reason}），pending 保持等待`);
+    return { ok: false, error: `failed to deliver approval to ${pending.from_instance}`, status: 503 };
+  }
+
+  clearPendingApproval(requestId, pending);
+
+  appendAudit({
+    action: behavior === "allow" ? "approval_granted" : "approval_denied",
+    request_id: requestId,
+    tool_name: pending.tool_name,
+    description: pending.description,
+    from_instance: pending.from_instance,
+    instance_online: true,
+    by: "dashboard",
+    waited_seconds: Math.round((Date.now() - pending.created_at) / 1000),
+  });
+
+  log(`✅ Dashboard 审批 ${requestId} → ${behavior} → ${pending.from_instance}`);
+  return { ok: true, action: behavior };
+}
+
+export function dismissApprovalFromDashboard(requestId: string): ResolveResult {
+  const pending = pendingPermissions.get(requestId);
+  if (!pending) {
+    return { ok: false, error: "pending not found", status: 404 };
+  }
+
+  clearPendingApproval(requestId, pending);
+
+  appendAudit({
+    action: "dismiss_pending",
+    request_id: requestId,
+    tool_name: pending.tool_name,
+    from_instance: pending.from_instance,
+    by: "dashboard",
+  });
+
+  log(`🗑️ Dashboard 解除挂起 ${requestId} (${pending.tool_name})`);
+  return { ok: true, action: "dismissed" };
 }

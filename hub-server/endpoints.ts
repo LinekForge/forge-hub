@@ -8,8 +8,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 
-import type { HubConfig, WsData } from "./types.js";
+import type { HubConfig, InboundHandleResult, WsData } from "./types.js";
 import {
   HUB_NAME,
   HUB_VERSION,
@@ -30,6 +31,7 @@ import {
   handleWsMessage,
   handleWsClose,
   getInstances,
+  listKnownInstances,
   pushToInstances,
   setInstanceTag,
   setInstanceDescription,
@@ -46,13 +48,130 @@ import {
   genDisplayIdPair,
   savePendingToDisk,
   resolveApprovalRecipient,
+  resolveApprovalFromDashboard,
+  dismissApprovalFromDashboard,
 } from "./approval.js";
+import {
+  addSSEClient,
+  removeSSEClient,
+  broadcastHomelandApproval,
+  broadcastHomelandStatus,
+} from "./channels/homeland.js";
 import { triggerLock, triggerUnlock } from "./lock.js";
 import { checkPermissionRate, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS } from "./rate-limit.js";
 import { resolveRecipient } from "./resolve.js";
 import { appendHistory, getOutboundFrom, readRecentHistory } from "./history.js";
 import { synthesizeToOgg } from "./tts.js";
 import { getCurrentConfig, startedAt } from "./hub-state.js";
+
+const DASHBOARD_DIR = path.join(import.meta.dir, "..", "hub-dashboard", "dist");
+const DASHBOARD_AUTH_COOKIE = "forge_hub_dashboard";
+const DASHBOARD_MIME_TYPES: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+};
+
+function normalizeApiPath(pathname: string): string {
+  if (pathname === "/api" || pathname === "/api/") return "/";
+  if (pathname.startsWith("/api/")) return pathname.slice(4);
+  return pathname;
+}
+
+function parseCookies(req: Request): Record<string, string> {
+  const raw = req.headers.get("Cookie") ?? "";
+  const parsed: Record<string, string> = {};
+  for (const chunk of raw.split(";")) {
+    const [name, ...rest] = chunk.trim().split("=");
+    if (!name) continue;
+    parsed[name] = decodeURIComponent(rest.join("="));
+  }
+  return parsed;
+}
+
+function dashboardAuthDigest(apiToken: string): string {
+  return crypto.createHash("sha256").update(`forge-hub-dashboard:${apiToken}`).digest("hex");
+}
+
+function hasDashboardSession(req: Request, apiToken: string): boolean {
+  if (!apiToken) return false;
+  const cookies = parseCookies(req);
+  return cookies[DASHBOARD_AUTH_COOKIE] === dashboardAuthDigest(apiToken);
+}
+
+function buildDashboardAuthCookie(apiToken: string): string {
+  return `${DASHBOARD_AUTH_COOKIE}=${dashboardAuthDigest(apiToken)}; Path=/; HttpOnly; SameSite=Strict`;
+}
+
+function clearDashboardAuthCookie(): string {
+  return `${DASHBOARD_AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
+}
+
+function resolveDashboardStaticFile(pathname: string): string | null {
+  const rawRelative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const normalizedRelative = path.posix.normalize(rawRelative);
+  if (!normalizedRelative || normalizedRelative.startsWith("..")) return null;
+  const filePath = path.resolve(DASHBOARD_DIR, normalizedRelative);
+  const dashboardRoot = path.resolve(DASHBOARD_DIR);
+  if (!filePath.startsWith(dashboardRoot + path.sep) && filePath !== dashboardRoot) return null;
+  try {
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      return filePath;
+    }
+  } catch {}
+  return null;
+}
+
+function serveDashboardFile(filePath: string): Response {
+  const ext = path.extname(filePath).toLowerCase();
+  return new Response(Bun.file(filePath), {
+    headers: { "Content-Type": DASHBOARD_MIME_TYPES[ext] ?? "application/octet-stream" },
+  });
+}
+
+function isDashboardStaticRequest(req: Request, url: URL): boolean {
+  if (req.method !== "GET") return false;
+  return resolveDashboardStaticFile(url.pathname) !== null;
+}
+
+function mapHomelandIngressFailure(result: InboundHandleResult): { status: number; error: string } {
+  switch (result.reason) {
+    case "allowlist_error":
+    case "unauthorized_sender":
+      return {
+        status: 403,
+        error:
+          result.detail
+            ? `Homeland Operator 未授权：${result.detail}`
+            : "Homeland Operator 未授权。先运行 `fh hub allow homeland local://operator Operator`。",
+      };
+    case "locked":
+      return { status: 423, error: "Hub 已锁定，Homeland 消息未转发" };
+    case "no_online_instance":
+    case "no_subscribed_instance":
+    case "unresolved_mention":
+    case "ambiguous_mention":
+    case "ambiguous_route":
+      return {
+        status: 409,
+        error: result.detail ?? `消息未送达（${result.reason}）`,
+      };
+    case "handler_missing":
+      return { status: 503, error: "Hub Homeland 入站处理器未注册" };
+    case "internal_error":
+      return { status: 500, error: result.detail ?? "Homeland 入站处理失败" };
+    default:
+      return {
+        status: 409,
+        error: result.detail ?? `Homeland 消息未送达（${result.reason}）`,
+      };
+  }
+}
 
 /**
  * 出站前检查通道健康。
@@ -121,6 +240,7 @@ export function startServer(config: HubConfig): void {
 
     async fetch(req, server) {
       const url = new URL(req.url);
+      const routePath = normalizeApiPath(url.pathname);
 
       // ── 可选 API Token 鉴权 ──────────────────────────────────────────────
       // 开源场景：本机多用户 / Hub bind 到 0.0.0.0 时，任何本机/网络进程都能 POST 消息。
@@ -137,9 +257,13 @@ export function startServer(config: HubConfig): void {
       // 其他所有 GET（如 /pending、/instances、/channels、/history）**都必须带 token**——
       // 它们暴露 pending 审批的 yes_id/no_id、实例列表、聊天历史等敏感数据。
       const apiToken = readAuthToken();
-      const isWsUpgrade = req.method === "GET" && url.pathname === "/ws";
-      const isStatusCheck = req.method === "GET" && url.pathname === "/status";
-      if (apiToken && !isStatusCheck) {
+      const isWsUpgrade = req.method === "GET" && routePath === "/ws";
+      const isStatusCheck = req.method === "GET" && routePath === "/status";
+      const isDashboardStatic = isDashboardStaticRequest(req, url);
+      const isDashboardAuth = req.method === "POST" && routePath === "/dashboard-auth";
+      const isDashboardLogout = req.method === "POST" && routePath === "/dashboard-logout";
+      const hasDashboardCookie = hasDashboardSession(req, apiToken);
+      if (apiToken && !isStatusCheck && !isDashboardStatic && !isDashboardAuth && !isDashboardLogout) {
         let providedToken = "";
         if (isWsUpgrade) {
           providedToken = url.searchParams.get("token") ?? "";
@@ -147,13 +271,13 @@ export function startServer(config: HubConfig): void {
           const authHeader = req.headers.get("Authorization") ?? "";
           providedToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
         }
-        if (providedToken !== apiToken) {
+        if (providedToken !== apiToken && !hasDashboardCookie) {
           return Response.json({ error: "unauthorized" }, { status: 401 });
         }
       }
 
       // GET /ws — WebSocket 实例连接
-      if (req.method === "GET" && url.pathname === "/ws") {
+      if (req.method === "GET" && routePath === "/ws") {
         const instanceId = url.searchParams.get("instance");
         if (!instanceId) {
           return new Response("missing instance parameter", { status: 400 });
@@ -164,7 +288,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // GET /status
-      if (req.method === "GET" && url.pathname === "/status") {
+      if (req.method === "GET" && routePath === "/status") {
         const instances = getInstances();
         return Response.json({
           name: HUB_NAME,
@@ -176,9 +300,42 @@ export function startServer(config: HubConfig): void {
         });
       }
 
+      // POST /dashboard-auth — 浏览器登录，成功后写 HttpOnly cookie
+      if (req.method === "POST" && routePath === "/dashboard-auth") {
+        try {
+          if (!apiToken) {
+            return Response.json(
+              { success: true, auth_required: false },
+              { headers: { "Set-Cookie": clearDashboardAuthCookie() } },
+            );
+          }
+          const body = await req.json() as { token?: string };
+          if (!body.token) {
+            return Response.json({ success: false, error: "缺少 token" }, { status: 400 });
+          }
+          if (body.token !== apiToken) {
+            return Response.json({ success: false, error: "token 不正确" }, { status: 401 });
+          }
+          return Response.json(
+            { success: true, auth_required: false },
+            { headers: { "Set-Cookie": buildDashboardAuthCookie(apiToken) } },
+          );
+        } catch (err) {
+          return Response.json({ success: false, error: redactSensitive(String(err)) }, { status: 500 });
+        }
+      }
+
+      // POST /dashboard-logout — 清除浏览器 cookie
+      if (req.method === "POST" && routePath === "/dashboard-logout") {
+        return Response.json(
+          { success: true },
+          { headers: { "Set-Cookie": clearDashboardAuthCookie() } },
+        );
+      }
+
       // GET /health — detailed health for debugging
-      if (req.method === "GET" && url.pathname === "/health") {
-        const instances = getInstances();
+      if (req.method === "GET" && routePath === "/health") {
+        const instances = listKnownInstances();
         const health = getAllChannelHealth();
         const mem = process.memoryUsage();
         return Response.json({
@@ -200,18 +357,21 @@ export function startServer(config: HubConfig): void {
               }];
             })
           ),
-          instances: [...instances.values()].map(i => ({
+          instances: instances.map((i) => ({
             id: i.id,
             tag: i.tag,
             description: i.description,
+            isChannel: i.isChannel,
             channels: i.channels,
+            presence: i.presence,
             connectedAt: i.connectedAt,
+            lastSeenAt: i.lastSeenAt,
           })),
         });
       }
 
       // GET /pending — 列出当前挂起的审批（用户可观测性）
-      if (req.method === "GET" && url.pathname === "/pending") {
+      if (req.method === "GET" && routePath === "/pending") {
         const now = Date.now();
         const pending = [...pendingPermissions.values()].map((p) => ({
           request_id: p.request_id,
@@ -229,21 +389,23 @@ export function startServer(config: HubConfig): void {
       }
 
       // GET /instances
-      if (req.method === "GET" && url.pathname === "/instances") {
-        const instances = getInstances();
-        const list = [...instances.values()].map((i) => ({
+      if (req.method === "GET" && routePath === "/instances") {
+        const list = listKnownInstances().map((i) => ({
           id: i.id,
           tag: i.tag,
           description: i.description,
+          isChannel: i.isChannel,
           channels: i.channels,
+          presence: i.presence,
           connectedAt: i.connectedAt,
+          lastSeenAt: i.lastSeenAt,
           summary: i.summary,
         }));
         return Response.json({ instances: list });
       }
 
       // GET /channels
-      if (req.method === "GET" && url.pathname === "/channels") {
+      if (req.method === "GET" && routePath === "/channels") {
         const meta = [...channelPluginsMeta.values()].map(p => ({
           id: p.name, name: p.displayName, aliases: p.aliases,
         }));
@@ -251,7 +413,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /lock
-      if (req.method === "POST" && url.pathname === "/lock") {
+      if (req.method === "POST" && routePath === "/lock") {
         if (!isLocked()) {
           triggerLock("cli");
         }
@@ -259,7 +421,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /unlock
-      if (req.method === "POST" && url.pathname === "/unlock") {
+      if (req.method === "POST" && routePath === "/unlock") {
         if (isLocked()) {
           triggerUnlock();
         }
@@ -267,7 +429,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // ── Lock guard for all outbound endpoints ────────────────────────────
-      if (isLocked() && req.method === "POST" && (url.pathname === "/send" || url.pathname === "/send-file" || url.pathname === "/send-voice")) {
+      if (isLocked() && req.method === "POST" && (routePath === "/send" || routePath === "/send-file" || routePath === "/send-voice")) {
         try {
           const body = await req.json() as { channel?: string; text?: string; instance?: string; path?: string };
           const who = body.instance ?? "unknown";
@@ -278,7 +440,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /permission-request — 实例发起远程审批请求
-      if (req.method === "POST" && url.pathname === "/permission-request") {
+      if (req.method === "POST" && routePath === "/permission-request") {
         try {
           const body = await req.json() as {
             request_id: string;
@@ -436,6 +598,11 @@ export function startServer(config: HubConfig): void {
           const pending = pendingPermissions.get(body.request_id)!;
           pending.pushed_channels = successful;
 
+          broadcastHomelandApproval({
+            request_id: body.request_id, yes_id, no_id,
+            tool_name: body.tool_name, description: body.description,
+            from_instance: body.instance,
+          });
           log(`🔐 审批 ${body.request_id} 已推送到 [${successful.join(",")}] (tool=${body.tool_name})`);
           if (failures.length > 0) log(`   部分失败: ${failures.join("; ")}`);
           appendAudit({
@@ -458,7 +625,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /send
-      if (req.method === "POST" && url.pathname === "/send") {
+      if (req.method === "POST" && routePath === "/send") {
         try {
           const body = await req.json() as {
             channel: string;
@@ -530,11 +697,16 @@ export function startServer(config: HubConfig): void {
           const instances = getInstances();
           const taggedText = addReplyTag(body.text, body.instance ?? "", instances.size, getCurrentConfig(), instances);
 
+          const senderInstance = getInstances().get(body.instance ?? "");
           const result = await plugin.send({
             to,
             content: taggedText,
             type: "text",
-            raw: { context_token: contextToken },
+            raw: {
+              context_token: contextToken,
+              from_instance: body.instance ?? "",
+              from_instance_tag: senderInstance?.description ?? senderInstance?.tag ?? "agent",
+            },
           });
 
           if (result.success) {
@@ -554,7 +726,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /send-file
-      if (req.method === "POST" && url.pathname === "/send-file") {
+      if (req.method === "POST" && routePath === "/send-file") {
         try {
           const body = await req.json() as {
             channel: string;
@@ -628,7 +800,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /send-voice
-      if (req.method === "POST" && url.pathname === "/send-voice") {
+      if (req.method === "POST" && routePath === "/send-voice") {
         try {
           const body = await req.json() as {
             channel: string;
@@ -693,7 +865,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // GET /history — 支持 limit + since_ts 过滤，用于 pull-model history 拉取
-      if (req.method === "GET" && url.pathname === "/history") {
+      if (req.method === "GET" && routePath === "/history") {
         try {
           const channel = url.searchParams.get("channel") ?? "wechat";
           // Security (redteam 终审 P1-4): channel 参数必须在 registered plugin
@@ -715,7 +887,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /set-tag
-      if (req.method === "POST" && (url.pathname === "/set-tag" || url.pathname === "/set-name")) {
+      if (req.method === "POST" && (routePath === "/set-tag" || routePath === "/set-name")) {
         try {
           const body = await req.json() as { instance: string; tag?: string; name?: string };
           const ok = setInstanceTag(body.instance, body.tag ?? body.name ?? "");
@@ -726,7 +898,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /set-description
-      if (req.method === "POST" && url.pathname === "/set-description") {
+      if (req.method === "POST" && routePath === "/set-description") {
         try {
           const body = await req.json() as { instance: string; description: string };
           const ok = setInstanceDescription(body.instance, body.description);
@@ -737,7 +909,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /set-channels
-      if (req.method === "POST" && url.pathname === "/set-channels") {
+      if (req.method === "POST" && routePath === "/set-channels") {
         try {
           const body = await req.json() as { instance: string; channels?: string[] };
           const channels = body.channels?.includes("all") ? undefined : body.channels;
@@ -749,7 +921,7 @@ export function startServer(config: HubConfig): void {
       }
 
       // POST /set-summary — 实例工作描述（per-session，只在线时存在，不持久化）
-      if (req.method === "POST" && url.pathname === "/set-summary") {
+      if (req.method === "POST" && routePath === "/set-summary") {
         try {
           const body = await req.json() as { instance: string; summary: string };
           const ok = setSummary(body.instance, body.summary);
@@ -762,8 +934,8 @@ export function startServer(config: HubConfig): void {
       // DELETE /pending/<id> — 手动清除 stale pending（当 CC 本地 resolved 但 hub 没收到 cancel 时）
       // 设计理由：Channels Reference 没有 permission_cancel notification 协议，CC 本地 resolve 后
       // hub 不知道；stale pending 残留到 240min TTL 烦人。这个 endpoint 让 agent 或管理员手动清。
-      if (req.method === "DELETE" && url.pathname.startsWith("/pending/")) {
-        const id = decodeURIComponent(url.pathname.slice("/pending/".length));
+      if (req.method === "DELETE" && routePath.startsWith("/pending/")) {
+        const id = decodeURIComponent(routePath.slice("/pending/".length));
         const pending = pendingPermissions.get(id);
         if (!pending) {
           return Response.json({ success: false, error: `pending ${id} 不存在` }, { status: 404 });
@@ -781,6 +953,177 @@ export function startServer(config: HubConfig): void {
           tool_name: pending.tool_name,
         });
         return Response.json({ success: true, cleaned: id, tool_name: pending.tool_name });
+      }
+
+      // ── Homeland endpoints ───────────────────────────────────────────────
+
+      // POST /homeland/send — Dashboard 发消息（仅本机）
+      if (req.method === "POST" && routePath === "/homeland/send") {
+        try {
+          const body = await req.json() as { content: string; instance?: string };
+          if (!body.content?.trim()) {
+            return Response.json({ error: "content is required" }, { status: 400 });
+          }
+          if (body.instance && !getInstances().has(body.instance)) {
+            return Response.json({ error: `selected instance ${body.instance} is offline` }, { status: 409 });
+          }
+          const plugin = channelPlugins.get("homeland");
+          if (!plugin) {
+            return Response.json({ error: "homeland channel not loaded" }, { status: 503 });
+          }
+          // homeland.ts 不需要 pushMessage 自己做，这里直接走 hub 的入站路由
+          // 通过 onMessage 回调会走到 hub.ts 的路由逻辑
+          const { onMessage } = await import("./hub-state.js");
+          const result = await onMessage({
+            channel: "homeland",
+            from: "Operator",
+            fromId: "local://operator",
+            content: body.content.trim(),
+            targetInstanceId: body.instance,
+            raw: {},
+          });
+          if (!result.accepted) {
+            const failure = mapHomelandIngressFailure(result);
+            return Response.json({ success: false, error: failure.error }, { status: failure.status });
+          }
+          return Response.json({ success: true, targets: result.targets ?? [] });
+        } catch (err) {
+          return Response.json({ error: redactSensitive(String(err)) }, { status: 500 });
+        }
+      }
+
+      // GET /homeland/stream — SSE 事件流
+      if (req.method === "GET" && routePath === "/homeland/stream") {
+        const instanceFilter = url.searchParams.get("instance") ?? undefined;
+        const stream = new ReadableStream({
+          start(controller) {
+            const client = addSSEClient(controller, instanceFilter);
+            // 发送初始连接确认
+            controller.enqueue(new TextEncoder().encode("event: connected\ndata: {}\n\n"));
+            // 心跳防断线
+            const heartbeat = setInterval(() => {
+              try {
+                controller.enqueue(new TextEncoder().encode(": heartbeat\n\n"));
+              } catch {
+                clearInterval(heartbeat);
+                removeSSEClient(client);
+              }
+            }, 30_000);
+            // cleanup 逻辑由 client 断开触发
+            req.signal.addEventListener("abort", () => {
+              clearInterval(heartbeat);
+              removeSSEClient(client);
+            });
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
+      }
+
+      // POST /homeland/presence — Dashboard 活跃状态心跳
+      if (req.method === "POST" && routePath === "/homeland/presence") {
+        try {
+          const body = await req.json() as { active: boolean };
+          const { setDashboardPresence } = await import("./hub-state.js");
+          if (setDashboardPresence) {
+            setDashboardPresence(body.active ?? true);
+          }
+          return Response.json({ success: true });
+        } catch (err) {
+          return Response.json({ error: redactSensitive(String(err)) }, { status: 500 });
+        }
+      }
+
+      // ── Dashboard 审批 ──────────────────────────────────────────────────
+
+      // POST /pending/:id/approve — 一键批准
+      if (req.method === "POST" && routePath.startsWith("/pending/") && routePath.endsWith("/approve")) {
+        const id = decodeURIComponent(routePath.slice("/pending/".length, -"/approve".length));
+        const result = resolveApprovalFromDashboard(id, "allow");
+        if (!result.ok) {
+          return Response.json({ error: result.error }, { status: result.status });
+        }
+        return Response.json({ success: true, action: result.action });
+      }
+
+      // POST /pending/:id/deny — 一键拒绝
+      if (req.method === "POST" && routePath.startsWith("/pending/") && routePath.endsWith("/deny")) {
+        const id = decodeURIComponent(routePath.slice("/pending/".length, -"/deny".length));
+        const result = resolveApprovalFromDashboard(id, "deny");
+        if (!result.ok) {
+          return Response.json({ error: result.error }, { status: result.status });
+        }
+        return Response.json({ success: true, action: result.action });
+      }
+
+      // POST /pending/:id/dismiss — 解除挂起（不回调 instance）
+      if (req.method === "POST" && routePath.startsWith("/pending/") && routePath.endsWith("/dismiss")) {
+        const id = decodeURIComponent(routePath.slice("/pending/".length, -"/dismiss".length));
+        const result = dismissApprovalFromDashboard(id);
+        if (!result.ok) {
+          return Response.json({ error: result.error }, { status: result.status });
+        }
+        return Response.json({ success: true, action: result.action });
+      }
+
+      // ── GET /overview — Dashboard 首屏聚合 ─────────────────────────────
+
+      if (req.method === "GET" && routePath === "/overview") {
+        const instances = listKnownInstances();
+        const health = getAllChannelHealth();
+        const now = Date.now();
+        const pending = [...pendingPermissions.values()].map((p) => ({
+          request_id: p.request_id,
+          yes_id: p.yes_id,
+          no_id: p.no_id,
+          tool_name: p.tool_name,
+          description: p.description,
+          from_instance: p.from_instance,
+          waited_seconds: Math.round((now - p.created_at) / 1000),
+          remaining_seconds: Math.max(0, Math.round((PERMISSION_TTL_MS - (now - p.created_at)) / 1000)),
+        }));
+        return Response.json({
+          instances: instances.map((i) => ({
+            id: i.id, tag: i.tag, description: i.description,
+            isChannel: i.isChannel,
+            channels: i.channels, presence: i.presence, connectedAt: i.connectedAt, lastSeenAt: i.lastSeenAt, summary: i.summary,
+          })),
+          channels: Object.fromEntries(
+            [...channelPlugins.keys()].map(ch => {
+              const h = health[ch] ?? { messagesIn: 0, messagesOut: 0, errors: 0, consecutiveFailures: 0, consecutiveSuccesses: 0 };
+              return [ch, { loaded: true, ...h, health_status: deriveHealthStatus(h as any) }];
+            })
+          ),
+          pending,
+          hub: {
+            version: HUB_VERSION,
+            pid: process.pid,
+            uptime: Math.round(process.uptime()),
+            memory_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+            started_at: startedAt,
+            locked: isLocked(),
+          },
+        });
+      }
+
+      // ── 静态文件 fallback（Dashboard dist/）────────────────────────────
+
+      if (req.method === "GET") {
+        const exactFile = resolveDashboardStaticFile(url.pathname);
+        if (exactFile) {
+          return serveDashboardFile(exactFile);
+        }
+        const wantsSpaShell = !path.extname(url.pathname) && !url.pathname.startsWith("/api/");
+        if (wantsSpaShell) {
+          const indexFile = resolveDashboardStaticFile("/");
+          if (indexFile) return serveDashboardFile(indexFile);
+        }
       }
 
       return new Response("not found", { status: 404 });

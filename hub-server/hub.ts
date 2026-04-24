@@ -38,7 +38,7 @@ import { drainQueuedWrites } from "./write-queue.js";
 // instance 侧就永远挂死。持久化到 state/_hub/pending.json，重启时恢复 Map + idLookup。
 // 每次 pending 变动（登记/清理/超时）后全量覆盖写——pending 数不会多，无性能问题。
 
-import type { HubConfig, InboundMessage } from "./types.js";
+import type { HubConfig, InboundHandleResult, InboundMessage } from "./types.js";
 
 import {
   pendingPermissions,
@@ -79,7 +79,7 @@ function loadConfig(): HubConfig {
 
 // 审批 state / TTL / ack → approval.ts；recipient resolve + subscription filter → resolve.ts。
 
-import { isLockTrigger, triggerLock } from "./lock.js";
+import { assertLockPhraseHealthy, isLockTrigger, triggerLock } from "./lock.js";
 
 type AllowlistGuardResult =
   | { ok: true; isAllowed: boolean; authSenderId: string }
@@ -103,15 +103,20 @@ function validateAuthorizedSender(msg: InboundMessage): AllowlistGuardResult {
 // 外壳：hub 内部的 route/filter/push 若 throw，不冒到调 pushMessage 的 channel 层。
 // channel 的 polling loop 一般有 try/catch 兜底，但 imessage setInterval / feishu readline
 // 是"事件回调"形态——同步 throw 会冒到 uncaughtException。这层包裹 = Hub 自身的 fail-safe。
-function onMessage(msg: InboundMessage): void {
+function onMessage(msg: InboundMessage): InboundHandleResult {
   try {
-    onMessageImpl(msg);
+    return onMessageImpl(msg);
   } catch (err) {
     logError(`onMessage 异常（channel=${msg.channel}, from=${msg.from}）: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    return {
+      accepted: false,
+      reason: "internal_error",
+      detail: err instanceof Error ? (err.stack ?? err.message) : String(err),
+    };
   }
 }
 
-function onMessageImpl(msg: InboundMessage): void {
+function onMessageImpl(msg: InboundMessage): InboundHandleResult {
   // Lock trigger check BEFORE writing history — never write the phrase
   if (isLockTrigger(msg.content)) {
     appendHistory(msg.channel, "in", msg.from, "[锁定触发]");
@@ -119,7 +124,7 @@ function onMessageImpl(msg: InboundMessage): void {
     if (!isLocked()) {
       triggerLock(`${msg.channel}:${msg.from}`);
     }
-    return;
+    return { accepted: true, reason: "lock_triggered" };
   }
 
   // ── 第二道防线：未授权消息进到 onMessage 意味着通道层第一道过滤失效 ─────────
@@ -133,7 +138,11 @@ function onMessageImpl(msg: InboundMessage): void {
       logError(
         `第二道防线: allowlist 校验失败 (channel=${msg.channel}, authSenderId=${senderCheck.authSenderId}): ${senderCheck.error}. 消息丢弃.`,
       );
-      return;
+      return {
+        accepted: false,
+        reason: "allowlist_error",
+        detail: senderCheck.error,
+      };
     }
     if (!senderCheck.isAllowed) {
       logError(
@@ -168,7 +177,11 @@ function onMessageImpl(msg: InboundMessage): void {
           });
         }
       }
-      return; // 丢弃原消息，绝不路由给Forge
+      return {
+        accepted: false,
+        reason: "unauthorized_sender",
+        detail: `${senderCheck.authSenderId} 未在 allowlist 中`,
+      }; // 丢弃原消息，绝不路由给Forge
     }
   }
 
@@ -201,7 +214,7 @@ function onMessageImpl(msg: InboundMessage): void {
             `你发的："${msg.content.trim()}"\n\n` +
             `当前待审批：\n${pendingList}`,
         );
-        return;
+        return { accepted: true, reason: "approval_malformed" };
       }
       // 非主人 loose match：不处理，走普通路由
     }
@@ -220,11 +233,19 @@ function onMessageImpl(msg: InboundMessage): void {
           `审批回复 id=${displayId} 无法校验主人身份 ` +
             `(channel=${msg.channel}, authSenderId=${authSenderId}): ${ownerCheck.error}`,
         );
-        return;
+        return {
+          accepted: false,
+          reason: "allowlist_error",
+          detail: ownerCheck.error,
+        };
       }
       if (!ownerCheck.isOwner) {
         log(`⚠️  审批回复 id=${displayId} 来自非主人 ${msg.channel}:${authSenderId}，忽略`);
-        return;
+        return {
+          accepted: false,
+          reason: "unauthorized_sender",
+          detail: `${authSenderId} 不是审批主人`,
+        };
       }
 
       // idLookup 是权威入口：从 display id 查出内部 request_id + 期望的 verdict
@@ -245,7 +266,7 @@ function onMessageImpl(msg: InboundMessage): void {
           `⚠️ 没有找到编号 ${displayId} 的审批——可能已超时、Hub 重启、或编号输错。\n` +
             `如果会话还在等，去那个终端按 Esc 取消当前 tool call。`,
         );
-        return;
+        return { accepted: true, reason: "invalid_permission_id" };
       }
 
       // 强绑定校验：verdict word 必须匹配 id 的语义
@@ -281,7 +302,7 @@ function onMessageImpl(msg: InboundMessage): void {
               `正确回复：\n回复 yes ${mismatchPending.yes_id} 批准\n回复 no ${mismatchPending.no_id} 拒绝`,
           );
         }
-        return;
+        return { accepted: true, reason: "approval_malformed" };
       }
 
       const requestId = lookup.request_id;
@@ -293,7 +314,11 @@ function onMessageImpl(msg: InboundMessage): void {
         );
         idLookup.delete(displayId);
         savePendingToDisk();
-        return;
+        return {
+          accepted: false,
+          reason: "internal_error",
+          detail: `idLookup[${displayId}] 指向缺失的 pending ${requestId}`,
+        };
       }
 
       // 清理：pending map + 两条 idLookup（yes_id 和 no_id）
@@ -325,7 +350,11 @@ function onMessageImpl(msg: InboundMessage): void {
           msg.fromId,
           `⚠️ ${verdict === "allow" ? "批准" : "拒绝"}已记录，但 ${pending.tool_name} 所在会话已离线，无法送达`,
         );
-        return;
+        return {
+          accepted: true,
+          reason: "approval_instance_offline",
+          detail: pending.from_instance,
+        };
       }
       instance.send({
         type: "permission_response",
@@ -344,7 +373,7 @@ function onMessageImpl(msg: InboundMessage): void {
         msg.fromId,
         `${verb} ${pending.tool_name}\n(${pending.description})`,
       );
-      return;
+      return { accepted: true, reason: "accepted" };
     }
   }
 
@@ -355,22 +384,47 @@ function onMessageImpl(msg: InboundMessage): void {
   // When locked: log but don't forward
   if (isLocked()) {
     log(`← [${msg.channel}] ${msg.from}: ${msg.content.slice(0, 60)}... [已锁定，未转发]`);
-    return;
+    return { accepted: false, reason: "locked" };
   }
 
   const result = route(msg, getInstances(), getCurrentConfig());
+  if (result.failure) {
+    log(`← [${msg.channel}] ${msg.from}: ${msg.content.slice(0, 60)}... (${result.failure.detail})`);
+    return {
+      accepted: false,
+      reason: result.failure.kind,
+      detail: result.failure.detail,
+      targeted: result.targeted,
+    };
+  }
   if (result.targets.length === 0) {
     log(`← [${msg.channel}] ${msg.from}: ${msg.content.slice(0, 60)}... (无在线实例)`);
-    return;
+    return {
+      accepted: false,
+      reason: "no_online_instance",
+      detail: "当前没有在线实例可接手",
+    };
   }
   const filtered = filterBySubscription(result.targets, msg.channel, result.targeted);
   if (filtered.length === 0) {
     log(`← [${msg.channel}] ${msg.from}: ${msg.content.slice(0, 60)}... (无订阅实例)`);
-    return;
+    return {
+      accepted: false,
+      reason: "no_subscribed_instance",
+      detail: `${msg.channel} 当前没有实例订阅`,
+      targeted: result.targeted,
+    };
   }
   const actualOnline = filtered.filter((id) => getInstances().has(id));
   if (actualOnline.length === 0 && filtered.length > 0) {
     logError(`⚠ 路由目标已全部离线（${filtered.join(",")}），消息未推送: ${msg.from}@${msg.channel}`);
+    return {
+      accepted: false,
+      reason: "no_online_instance",
+      detail: `路由目标已全部离线：${filtered.join(",")}`,
+      targets: filtered,
+      targeted: result.targeted,
+    };
   }
   pushToInstances(filtered, {
     type: "message",
@@ -383,6 +437,12 @@ function onMessageImpl(msg: InboundMessage): void {
   });
   const targetInfo = result.targeted ? ` → ${filtered.join(",")}` : "";
   log(`← [${msg.channel}] ${msg.from}${targetInfo}: ${result.content.slice(0, 60)}${result.content.length > 60 ? "..." : ""}`);
+  return {
+    accepted: true,
+    reason: "accepted",
+    targets: filtered,
+    targeted: result.targeted,
+  };
 }
 
 // ── Channel Plugin Registry (shared) ────────────────────────────────────────
@@ -393,7 +453,7 @@ import { appendHistory, readRecentHistory } from "./history.js";
 import { channelPlugins, channelPluginsMeta, populate as populateRegistry } from "./channel-registry.js";
 import { filterBySubscription } from "./resolve.js";
 import { startServer } from "./endpoints.js";
-import { setCurrentConfig, getCurrentConfig } from "./hub-state.js";
+import { setCurrentConfig, getCurrentConfig, setOnMessage } from "./hub-state.js";
 import { startChannelWatchdog } from "./channel-watchdog.js";
 import { loadAllowlist, readAllowlist } from "./state.js";
 
@@ -402,6 +462,7 @@ import { loadAllowlist, readAllowlist } from "./state.js";
 async function main() {
   ensureDirs();
   auditAllowlistPerms();
+  assertLockPhraseHealthy();
 
   // ── Startup ─────────────────────────────────────────────────────────────
   loadLockState();
@@ -416,6 +477,21 @@ async function main() {
 
   if (!config.approval_channels?.length) {
     logError("⚠ approval_channels 未配置。远程审批请求会被 auto-deny。运行 fh hub setup 或编辑 ~/.forge-hub/hub-config.json 添加。");
+  } else {
+    for (const channel of config.approval_channels) {
+      const allowlist = loadAllowlist(channel);
+      const ownerId = allowlist.approval_owner_id?.trim();
+      if (!ownerId) {
+        logError(`⚠ 审批通道 ${channel} 未配置 approval owner。运行 fh hub owner ${channel} <id> 后远程审批才会生效。`);
+        continue;
+      }
+      const ownerExists = allowlist.allowed.some((entry) =>
+        isAuthorizedSenderMatch(channel, ownerId, entry.id),
+      );
+      if (!ownerExists) {
+        logError(`⚠ 审批通道 ${channel} 的 approval owner (${ownerId}) 不在 allowlist 中。先修正 allowlist 或重新设置 owner。`);
+      }
+    }
   }
 
   // Write default config if not exists
@@ -466,6 +542,9 @@ async function main() {
 
   // Start HTTP server
   startServer(config);
+
+  // Register onMessage callback for Homeland endpoint
+  setOnMessage(onMessage);
 
   // Load channel plugins
   const loaded = await loadChannels(onMessage);

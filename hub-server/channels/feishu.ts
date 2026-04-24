@@ -231,10 +231,11 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
 
   if (!senderId || !chatId) return;
 
-  // Check allowlist — 非主人拒收 + push system 告警（统一 4 通道模式）
-  // 群消息：群 chat_id (oc_) 在白名单即视为授权（群成员无需单独加白名单）
+  // Check allowlist — 私聊按 sender_id 授权；群聊必须显式授权 chat_id，避免个人授权被带进群。
   const isGroupMessage = chatId.startsWith("oc_");
-  if (!isAllowed(senderId) && !(isGroupMessage && isAllowed(chatId))) {
+  const isAuthorizedGroup = isGroupMessage && isAllowed(chatId);
+  const isAuthorizedDirect = !isGroupMessage && isAllowed(senderId);
+  if (!isAuthorizedDirect && !isAuthorizedGroup) {
     const rawPreview = (event.content ?? "") as string;
     hub.logError(`⛔ 拒绝未授权: ${senderName} (${senderId}), 原文前 50: "${rawPreview.slice(0, 50)}"`);
     hub.pushMessage({
@@ -289,7 +290,10 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
 
   if (!content) return;
 
-  const displayName = getNickname(senderId) || senderName;
+  const senderDisplay = getNickname(senderId) || senderName;
+  const displayName = isAuthorizedGroup
+    ? `${senderDisplay} @ ${getNickname(chatId)}`
+    : senderDisplay;
   hub.log(`← ${displayName}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
 
   // 群消息用 chat_id (oc_) 作为 fromId，这样 reply 会发到群里而不是私聊
@@ -299,7 +303,12 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
     from: displayName,
     fromId: replyTo,
     content,
-    raw: { sender_id: senderId, chat_id: chatId, message_type: msgType },
+    raw: {
+      sender_id: senderId,
+      chat_id: chatId,
+      message_type: msgType,
+      auth_sender_id: isAuthorizedGroup ? chatId : senderId,
+    },
   });
 
   // History recorded by Hub layer

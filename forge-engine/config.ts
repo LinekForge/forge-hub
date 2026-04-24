@@ -11,23 +11,20 @@ export const CHANNEL_VERSION = "0.1.0";
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
-export const DIR = path.join(
-  process.env.HOME || "~",
-  ".claude",
-  "channels",
-  "engine",
-);
+export const CODE_DIR = import.meta.dir;
 
-export const CONFIG_FILE = path.join(DIR, "engine-config.json");
-export const SCHEDULE_DIR = path.join(DIR, "engine.d");
-export const STATE_DIR = path.join(DIR, "engine-state");
-export const HANDLERS_DIR = path.resolve(
-  import.meta.dir,
-  "handlers",
-);
-export const SCHEDULE_FILE = path.join(DIR, "engine-schedule.json");
-export const ACTION_LOG_FILE = path.join(DIR, "engine-trigger-log.md");
-export const PID_FILE = path.join(DIR, "engine.pid");
+export const DATA_DIR = process.env.FORGE_ENGINE_DATA
+  ?? path.join(process.env.HOME || "~", ".forge-hub", "engine-data");
+
+export const DIR = DATA_DIR;
+
+export const CONFIG_FILE = path.join(DATA_DIR, "engine-config.json");
+export const SCHEDULE_DIR = path.join(DATA_DIR, "engine.d");
+export const STATE_DIR = path.join(DATA_DIR, "engine-state");
+export const HANDLERS_DIR = path.resolve(CODE_DIR, "handlers");
+export const SCHEDULE_FILE = path.join(DATA_DIR, "engine-schedule.json");
+export const ACTION_LOG_FILE = path.join(DATA_DIR, "engine-trigger-log.md");
+export const PID_FILE = path.join(DATA_DIR, "engine.pid");
 
 // ── Logging (stderr — stdout is MCP stdio) ──────────────────────────────────
 

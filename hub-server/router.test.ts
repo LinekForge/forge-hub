@@ -9,7 +9,7 @@ function makeInstance(id: string, tag?: string): ConnectedInstance {
     tag,
     connectedAt: new Date().toISOString(),
     ws: {} as ConnectedInstance["ws"],
-    send() {},
+    send() { return 1; },
     close() {},
   };
 }
@@ -24,7 +24,7 @@ const baseConfig: HubConfig = {
 function makeMessage(content: string): InboundMessage {
   return {
     channel: "wechat",
-    from: "Linek",
+    from: "Operator",
     fromId: "wx_123",
     content,
     raw: {},
@@ -78,5 +78,85 @@ describe("router", () => {
     expect(result.targets).toEqual(["instance-1"]);
     expect(result.targeted).toBe(true);
     expect(result.content).toBe("please check this");
+  });
+
+  test("prefers an explicit dashboard target instance over primary or broadcast routing", () => {
+    const instances = new Map<string, ConnectedInstance>([
+      ["instance-1", makeInstance("instance-1", "ops")],
+      ["instance-2", makeInstance("instance-2", "qa")],
+    ]);
+
+    const result = route(
+      {
+        ...makeMessage("please handle this"),
+        channel: "homeland",
+        targetInstanceId: "instance-2",
+      },
+      instances,
+      { ...baseConfig, primary_instance: "instance-1" },
+    );
+
+    expect(result).toEqual({
+      targets: ["instance-2"],
+      targeted: true,
+      content: "please handle this",
+    });
+  });
+
+  test("fails closed when an explicit @mention does not resolve", () => {
+    const instances = new Map<string, ConnectedInstance>([
+      ["instance-1", makeInstance("instance-1", "ops")],
+      ["instance-2", makeInstance("instance-2", "qa")],
+    ]);
+
+    const result = route(makeMessage("please @offline check this"), instances, baseConfig);
+
+    expect(result).toEqual({
+      targets: [],
+      targeted: true,
+      content: "please check this",
+      failure: {
+        kind: "unresolved_mention",
+        detail: "未找到实例 @offline",
+      },
+    });
+  });
+
+  test("fails closed when duplicate tags make @routing ambiguous", () => {
+    const instances = new Map<string, ConnectedInstance>([
+      ["instance-1", makeInstance("instance-1", "ops")],
+      ["instance-2", makeInstance("instance-2", "ops")],
+    ]);
+
+    const result = route(makeMessage("please @ops check this"), instances, baseConfig);
+
+    expect(result).toEqual({
+      targets: [],
+      targeted: true,
+      content: "please check this",
+      failure: {
+        kind: "ambiguous_mention",
+        detail: "@ops 匹配到多个实例，请先修正重复 tag",
+      },
+    });
+  });
+
+  test("fails closed instead of broadcasting when multiple instances are online without a primary", () => {
+    const instances = new Map<string, ConnectedInstance>([
+      ["instance-1", makeInstance("instance-1", "ops")],
+      ["instance-2", makeInstance("instance-2", "qa")],
+    ]);
+
+    const result = route(makeMessage("please handle this"), instances, baseConfig);
+
+    expect(result).toEqual({
+      targets: [],
+      targeted: false,
+      content: "please handle this",
+      failure: {
+        kind: "ambiguous_route",
+        detail: "当前有多个在线实例，但 primary_instance 未配置。请显式 @tag 或先设置主实例。",
+      },
+    });
   });
 });

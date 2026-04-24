@@ -12,7 +12,7 @@ import { CHANNELS_DIR, log, logError, channelLog, channelLogError, formatUnautho
 import { loadChannelState, saveChannelState } from "./state.js";
 import { ChannelStartSkipError } from "./types.js";
 import type { ChannelPlugin, HubAPI, InboundMessage } from "./types.js";
-import type { ChannelSendEntry } from "./channel-registry.js";
+import { populate as populateRegistry, type ChannelMetaEntry, type ChannelSendEntry } from "./channel-registry.js";
 
 // ── State ───────────────────────────────────────────────────────────────────
 
@@ -132,7 +132,43 @@ type PluginSend = ChannelPlugin["send"];
 
 interface LoadResult {
   sendMap: Map<string, ChannelSendEntry>;
-  metaMap: Map<string, { name: string; displayName: string; aliases: string[] }>;
+  metaMap: Map<string, ChannelMetaEntry>;
+}
+
+function buildRegistrySnapshot(): LoadResult {
+  const sendMap = new Map<string, ChannelSendEntry>();
+  const metaMap = new Map<string, ChannelMetaEntry>();
+  for (const [name, plugin] of plugins) {
+    sendMap.set(name, {
+      send: async (p) => {
+        const current = plugins.get(name);
+        if (!current) return { success: false, error: `通道 ${name} 已卸载` };
+        // 强制 capabilities：不在 capabilities 列表的 type 直接拒绝，不调 plugin.send
+        if (current.capabilities && current.capabilities.length > 0 && !current.capabilities.includes(p.type as any)) {
+          return { success: false, error: `通道 ${name} 不支持 ${p.type}（capabilities: ${current.capabilities.join(",")}）` };
+        }
+        return current.send(p);
+      },
+      // Dynamic lookup so hot-reloaded isNativeId picks up (redteam A6)
+      isNativeId: (to) => plugins.get(name)?.isNativeId?.(to) ?? false,
+      // Dynamic lookup so hot-reloaded asrTranscribe picks up
+      asrTranscribe: async (audioPath) => {
+        const current = plugins.get(name);
+        return current?.asrTranscribe ? current.asrTranscribe(audioPath) : null;
+      },
+    });
+    metaMap.set(name, {
+      name: plugin.name,
+      displayName: plugin.displayName ?? plugin.name,
+      aliases: plugin.aliases ?? [],
+    });
+  }
+  return { sendMap, metaMap };
+}
+
+function syncSharedRegistry(): void {
+  const { sendMap, metaMap } = buildRegistrySnapshot();
+  populateRegistry(sendMap, metaMap);
 }
 
 export async function loadChannels(
@@ -174,34 +210,7 @@ export async function loadChannels(
   // sendMap uses dynamic lookup so hot-reloaded plugins are used immediately
   // capabilities enforcement：router 层应该先 check plugin.capabilities.includes(type)。
   // 这里包装一层 fallback，即使 router 忘记也给个 consistent 失败（不是崩）——zero trust design
-  const sendMap = new Map<string, ChannelSendEntry>();
-  const metaMap = new Map<string, { name: string; displayName: string; aliases: string[] }>();
-  for (const [name, plugin] of plugins) {
-    sendMap.set(name, {
-      send: async (p) => {
-        const current = plugins.get(name);
-        if (!current) return { success: false, error: `通道 ${name} 已卸载` };
-        // 强制 capabilities：不在 capabilities 列表的 type 直接拒绝，不调 plugin.send
-        if (current.capabilities && current.capabilities.length > 0 && !current.capabilities.includes(p.type as any)) {
-          return { success: false, error: `通道 ${name} 不支持 ${p.type}（capabilities: ${current.capabilities.join(",")}）` };
-        }
-        return current.send(p);
-      },
-      // Dynamic lookup so hot-reloaded isNativeId picks up (redteam A6)
-      isNativeId: (to) => plugins.get(name)?.isNativeId?.(to) ?? false,
-      // Dynamic lookup so hot-reloaded asrTranscribe picks up
-      asrTranscribe: async (audioPath) => {
-        const current = plugins.get(name);
-        return current?.asrTranscribe ? current.asrTranscribe(audioPath) : null;
-      },
-    });
-    metaMap.set(name, {
-      name: plugin.name,
-      displayName: plugin.displayName ?? plugin.name,
-      aliases: plugin.aliases ?? [],
-    });
-  }
-  return { sendMap, metaMap };
+  return buildRegistrySnapshot();
 }
 
 // ── Hot Reload Watcher ──────────────────────────────────────────────────────
@@ -244,6 +253,7 @@ function startWatcher(onMessage: (msg: InboundMessage) => void): void {
             }
             fileToPlugin.delete(filePath);
             log(`🔌 通道已卸载: ${pluginName} (${filename} 已删除)`);
+            syncSharedRegistry();
           }
           return;
         }
@@ -267,6 +277,7 @@ function startWatcher(onMessage: (msg: InboundMessage) => void): void {
           }
           plugins.set(plugin.name, plugin);
           fileToPlugin.set(filePath, plugin.name);
+          syncSharedRegistry();
         } else if (outcome.kind === "skipped") {
           const oldName = fileToPlugin.get(filePath);
           if (oldName) {
@@ -278,6 +289,7 @@ function startWatcher(onMessage: (msg: InboundMessage) => void): void {
             fileToPlugin.delete(filePath);
           }
           log(`⏭ 通道跳过: ${filename}（${outcome.reason}）`);
+          syncSharedRegistry();
         } else if (outcome.kind === "helper") {
           log(`📄 ${filename}: 视为 helper（${outcome.reason}）——不重载`);
         } else {

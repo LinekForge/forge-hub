@@ -59,7 +59,11 @@ async function startTestHub(): Promise<TestHub> {
   fs.mkdirSync(allowlistDir, { recursive: true });
   fs.writeFileSync(
     path.join(allowlistDir, "allowlist.json"),
-    JSON.stringify({ allowed: [{ id: TEST_OWNER_ID, nickname: TEST_OWNER_NAME }], auto_allow_next: false }, null, 2),
+    JSON.stringify({
+      allowed: [{ id: TEST_OWNER_ID, nickname: TEST_OWNER_NAME }],
+      auto_allow_next: false,
+      approval_owner_id: TEST_OWNER_ID,
+    }, null, 2),
   );
 
   // hub-config.json

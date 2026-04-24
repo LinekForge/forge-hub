@@ -22,3 +22,36 @@ export function getCurrentConfig(): HubConfig {
   if (!_currentConfig) throw new Error("hub-state: currentConfig 未初始化（main() 要在 startServer 前 setCurrentConfig）");
   return _currentConfig;
 }
+
+// ── Homeland 入站回调 ────────────────────────────────────────────────────
+
+import type { InboundHandleResult, InboundMessage } from "./types.js";
+
+let _onMessage: ((msg: InboundMessage) => InboundHandleResult | Promise<InboundHandleResult>) | null = null;
+
+export function setOnMessage(
+  fn: (msg: InboundMessage) => InboundHandleResult | Promise<InboundHandleResult>,
+): void {
+  _onMessage = fn;
+}
+
+export const onMessage = async (msg: InboundMessage): Promise<InboundHandleResult> => {
+  if (_onMessage) return await _onMessage(msg);
+  return {
+    accepted: false,
+    reason: "handler_missing",
+    detail: "hub onMessage 未注册",
+  };
+};
+
+// ── Dashboard presence ──────────────────────────────────────────────────
+
+let _dashboardPresence = { lastSeen: new Date(), active: false };
+
+export function setDashboardPresence(active: boolean): void {
+  _dashboardPresence = { lastSeen: new Date(), active };
+}
+
+export function getDashboardPresence(): { lastSeen: Date; active: boolean } {
+  return _dashboardPresence;
+}

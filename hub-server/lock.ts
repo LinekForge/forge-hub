@@ -23,20 +23,32 @@ import { getInstances, pushToInstances } from "./instance-manager.js";
 import { channelPlugins } from "./channel-registry.js";
 import { loadChannelState } from "./state.js";
 
+export class LockPhraseConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LockPhraseConfigError";
+  }
+}
+
 export function getLockPhrase(): string {
-  // Security-critical: lock-phrase is the panic button. 读失败绝不静默返空——
-  // 若文件损坏返空会让用户以为"我设了暗号还能救命"，实际已失效。
-  // 读失败 logError + return ""——caller（isLockTrigger）应该在启动时再做一次
-  // self-check 或 warning，确保不是"无声失效"。
   const phraseFile = `${HUB_DIR}/lock-phrase.json`;
   if (!fs.existsSync(phraseFile)) return "";
   try {
     const data = JSON.parse(fs.readFileSync(phraseFile, "utf-8"));
-    return (data.phrase ?? "").trim();
+    if (data.phrase == null) return "";
+    if (typeof data.phrase !== "string") {
+      throw new Error("phrase must be a string");
+    }
+    return data.phrase.trim();
   } catch (err) {
-    logError(`🚨 lock-phrase.json 读取失败（panic button 暗号将失效）: ${String(err)}`);
-    return "";
+    const message = `🚨 lock-phrase.json 读取失败（panic button 已进入 fail-closed）: ${String(err)}`;
+    logError(message);
+    throw new LockPhraseConfigError(message);
   }
+}
+
+export function assertLockPhraseHealthy(): void {
+  void getLockPhrase();
 }
 
 export function isLockTrigger(content: string): boolean {

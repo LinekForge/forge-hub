@@ -1,9 +1,8 @@
 name: CI
 
-# Minimal CI: type-check hub-server and hub-client on every PR and push to main.
-# Reason: open-source contributors shouldn't wait for maintainer review to find
-# out if tsc is happy with their change. Clean-env typecheck also catches the
-# dev-env bias (e.g. missing imports that happen to resolve locally).
+# Basic CI: keep typecheck on core packages, and also cover the repo surfaces
+# that currently carry the most churn (hub-dashboard build, hub-server tests,
+# forge-cli tests).
 on:
   pull_request:
   push:
@@ -32,3 +31,92 @@ jobs:
       - name: TypeScript check
         working-directory: ${{ matrix.package }}
         run: bunx tsc --noEmit
+
+  hub-server-test:
+    name: hub-server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: hub-server
+        run: bun install
+
+      - name: Run tests
+        working-directory: hub-server
+        run: bun test
+
+  forge-cli-test:
+    name: forge-cli tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run tests
+        working-directory: forge-cli
+        run: bun test
+
+  forge-engine-test:
+    name: forge-engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: forge-engine
+        run: bun install
+
+      - name: Run tests
+        working-directory: forge-engine
+        run: bun test
+
+  hub-dashboard-build:
+    name: hub-dashboard build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: hub-dashboard
+        run: bun install
+
+      - name: Build dashboard
+        working-directory: hub-dashboard
+        run: bun run build
+
+  hub-test-harness:
+    name: hub test harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run harness
+        run: bun hub-test-harness/harness.ts

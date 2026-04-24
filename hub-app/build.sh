@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_NAME="Forge Hub"
+APP="$SCRIPT_DIR/$APP_NAME.app"
+SRC="$SCRIPT_DIR/app"
+
+echo "=== 编译 Forge Hub ==="
+
+# 1. Quit existing
+osascript -e "tell application \"$APP_NAME\" to quit" 2>/dev/null || true
+sleep 1
+
+# 2. Create .app bundle
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$SRC/Info.plist" "$APP/Contents/"
+echo -n "APPL????" > "$APP/Contents/PkgInfo"
+
+# 3. Copy icon if exists
+[ -f "$SRC/AppIcon.icns" ] && cp "$SRC/AppIcon.icns" "$APP/Contents/Resources/"
+[ -f "$SRC/icon.png" ] && cp "$SRC/icon.png" "$APP/Contents/Resources/"
+
+# 4. Compile Swift
+echo "  → 编译 Swift..."
+swiftc \
+    "$SRC/Models.swift" \
+    "$SRC/TerminalAdapter.swift" \
+    "$SRC/SessionStore.swift" \
+    "$SRC/SessionDescriptionStore.swift" \
+    "$SRC/SessionScanner.swift" \
+    "$SRC/HubClient.swift" \
+    "$SRC/WebViewBridge.swift" \
+    "$SRC/AppDelegate.swift" \
+    "$SRC/main.swift" \
+    -o "$APP/Contents/MacOS/ForgeHub" \
+    -framework Cocoa \
+    -framework WebKit \
+    -target arm64-apple-macos13.0 \
+    -suppress-warnings
+
+# 5. Sign
+xattr -cr "$APP" 2>/dev/null || true
+codesign --force --deep --sign - "$APP"
+
+# 6. Deploy scan-sessions.py
+mkdir -p "$HOME/.claude/自动化/scripts"
+cp "$SCRIPT_DIR/shared/scan-sessions.py" "$HOME/.claude/自动化/scripts/" 2>/dev/null || true
+
+echo "  ✓ $APP_NAME.app"
+echo ""
+echo "=== 完成 ==="
+echo "启动：open \"$APP\""
+echo "开发模式：\"$APP/Contents/MacOS/ForgeHub\" --dev"

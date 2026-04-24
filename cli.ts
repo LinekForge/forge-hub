@@ -15,39 +15,52 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const HOME = os.homedir();
 const HUB_DIR = path.join(HOME, ".forge-hub");
+const PACKAGE_RUNTIME = path.join(HUB_DIR, "package");
 const CHANNELS_RUNTIME = path.join(HOME, ".forge-hub", "channels");
 const HUB_CLIENT_RUNTIME = path.join(HOME, ".claude", "channels", "hub");
+const HUB_DASHBOARD_RUNTIME = path.join(HUB_DIR, "hub-dashboard");
 const LAUNCHD_PLIST = path.join(HOME, "Library", "LaunchAgents", "com.forge-hub.plist");
 const CLAUDE_JSON = path.join(HOME, ".claude.json");
 const API_TOKEN_FILE = path.join(HUB_DIR, "api-token");
 
 // 找包根目录（从 cli.ts 的位置反推）
-const PKG_ROOT = path.dirname(new URL(import.meta.url).pathname);
+const PKG_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 function log(msg: string): void { console.log(msg); }
 function die(msg: string): never { console.error(`❌ ${msg}`); process.exit(1); }
+
+function resolveBunPath(): string {
+  return process.execPath && process.execPath.includes("bun")
+    ? process.execPath
+    : which("bun") ?? "bun";
+}
 
 // ── install ─────────────────────────────────────────────────────────────────
 
 function installCmd(): void {
   log("🔧 Forge Hub install\n");
+  const bunPath = resolveBunPath();
 
   // 1. Check Bun
   try {
-    execFileSync("bun", ["--version"], { stdio: "ignore" });
+    execFileSync(bunPath, ["--version"], { stdio: "ignore" });
   } catch {
     die("Bun 未安装。请先安装 Bun: https://bun.sh/docs/installation");
   }
   log("✓ Bun 已安装");
 
+  const packageRoot = stagePackageRuntime();
+  const configDoc = path.join(packageRoot, "配置.md");
+
   // 2. Install hub-server
   // redteam r2 M1: mkdirSync 带 mode 0o700，缩小 mkdir 默认 0o755 到 chmod
   // 0o700 之间的窗口（attacker 可在此毫秒级窗口写 api-token symlink 预埋）。
   fs.mkdirSync(CHANNELS_RUNTIME, { recursive: true, mode: 0o700 });
-  const serverSrc = path.join(PKG_ROOT, "hub-server");
+  const serverSrc = path.join(packageRoot, "hub-server");
   cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"]);
   cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
   // Security (redteam B3): chmod 700 CHANNELS_RUNTIME——防其他 user-level 进程
@@ -63,19 +76,28 @@ function installCmd(): void {
 
   // 3. Install hub-client
   fs.mkdirSync(HUB_CLIENT_RUNTIME, { recursive: true });
-  const clientSrc = path.join(PKG_ROOT, "hub-client");
+  const clientSrc = path.join(packageRoot, "hub-client");
   cpDir(clientSrc, HUB_CLIENT_RUNTIME, [".ts", ".json", ".lock", ".mcp.json"]);
   log(`✓ hub-client 部署到 ${HUB_CLIENT_RUNTIME}`);
 
+  // 3.5 Install dashboard source so Hub can serve a built dist at runtime
+  const dashboardSrc = path.join(packageRoot, "hub-dashboard");
+  copyFilteredTree(dashboardSrc, HUB_DASHBOARD_RUNTIME, [".ts", ".tsx", ".js", ".json", ".css", ".html", ".svg", ".lock", ".md"]);
+  log(`✓ hub-dashboard 源码部署到 ${HUB_DASHBOARD_RUNTIME}`);
+
   // 4. Install dependencies
   log("⏳ 安装依赖（bun install）...");
-  execFileSync("bun", ["install"], { cwd: HUB_DIR, stdio: "inherit" });
-  execFileSync("bun", ["install"], { cwd: HUB_CLIENT_RUNTIME, stdio: "inherit" });
+  execFileSync(bunPath, ["install"], { cwd: HUB_DIR, stdio: "inherit" });
+  execFileSync(bunPath, ["install"], { cwd: HUB_CLIENT_RUNTIME, stdio: "inherit" });
+  execFileSync(bunPath, ["install"], { cwd: HUB_DASHBOARD_RUNTIME, stdio: "inherit" });
   log("✓ 依赖装好");
+
+  log("⏳ 构建 dashboard...");
+  execFileSync(bunPath, ["run", "build"], { cwd: HUB_DASHBOARD_RUNTIME, stdio: "inherit" });
+  log("✓ hub-dashboard dist 已构建");
 
   // 5. Write launchd plist (Mac only)
   if (os.platform() === "darwin") {
-    const bunPath = which("bun") ?? "/opt/homebrew/bin/bun";
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -160,7 +182,7 @@ function installCmd(): void {
       }
     } catch { /* 不存在 / 其他工具的 forge 都不管 */ }
     if (fs.existsSync(fhBin)) fs.unlinkSync(fhBin);
-    fs.symlinkSync(path.join(PKG_ROOT, "forge-cli", "forge.ts"), fhBin);
+    fs.symlinkSync(path.join(packageRoot, "forge-cli", "forge.ts"), fhBin);
     log(`✓ fh CLI symlink: ${fhBin}（用 \`fh hub allow/status/peers\` 等）`);
 
   // S1b: surface approval_channels prerequisite for server:hub mode.
@@ -182,7 +204,7 @@ function installCmd(): void {
     }
   } catch { /* cfg 读取失败不阻塞 install，doctor 会再次报 */ }
   } catch (err) {
-    console.warn(`⚠️  fh symlink 失败: ${String(err)}\n   你可以手动: ln -sf ${path.join(PKG_ROOT, "forge-cli/forge.ts")} ${fhBin}`);
+    console.warn(`⚠️  fh symlink 失败: ${String(err)}\n   你可以手动: ln -sf ${path.join(packageRoot, "forge-cli/forge.ts")} ${fhBin}`);
   }
 
   // 7.5 symlink `forge-hub` 指向 cli.ts——让文档里的 `forge-hub install/uninstall/doctor`
@@ -190,10 +212,10 @@ function installCmd(): void {
   const forgeHubBin = path.join(HOME, "bin", "forge-hub");
   try {
     if (fs.existsSync(forgeHubBin)) fs.unlinkSync(forgeHubBin);
-    fs.symlinkSync(path.join(PKG_ROOT, "cli.ts"), forgeHubBin);
+    fs.symlinkSync(path.join(packageRoot, "cli.ts"), forgeHubBin);
     log(`✓ forge-hub CLI symlink: ${forgeHubBin}（用 \`forge-hub install/uninstall/doctor\`）`);
   } catch (err) {
-    console.warn(`⚠️  forge-hub symlink 失败: ${String(err)}\n   你可以手动: ln -sf ${path.join(PKG_ROOT, "cli.ts")} ${forgeHubBin}`);
+    console.warn(`⚠️  forge-hub symlink 失败: ${String(err)}\n   你可以手动: ln -sf ${path.join(packageRoot, "cli.ts")} ${forgeHubBin}`);
   }
 
   // redteam r2 L4: 检测 ~/bin 在不在 PATH。现代 macOS 默认 zsh PATH 不含
@@ -209,7 +231,6 @@ function installCmd(): void {
    然后重开 shell 或 source，再跑 \`fh hub status\` 验证。`);
   }
 
-  const configDoc = path.join(PKG_ROOT, "配置.md");
   log(`
 ✅ Install 完成
 
@@ -267,8 +288,15 @@ function uninstallCmd(): void {
     try {
       if (fs.lstatSync(binPath).isSymbolicLink()) {
         const target = fs.readlinkSync(binPath);
+        const runtimeCli = path.join(PACKAGE_RUNTIME, "cli.ts");
+        const runtimeFh = path.join(PACKAGE_RUNTIME, "forge-cli", "forge.ts");
         // 只删指向本包的 symlink（防误删同名其他工具）
-        if (target.includes("forge-hub") || target.includes("forge-cli/forge.ts")) {
+        if (
+          target.includes("forge-hub")
+          || target.includes("forge-cli/forge.ts")
+          || target === runtimeCli
+          || target === runtimeFh
+        ) {
           fs.unlinkSync(binPath);
           log(`✓ ${binPath} 已删`);
         }
@@ -355,6 +383,53 @@ function cpDir(src: string, dst: string, exts: string[]): void {
   }
 }
 
+function copyFilteredTree(src: string, dst: string, exts: string[]): void {
+  if (!fs.existsSync(src)) die(`source 不存在: ${src}`);
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue;
+    const sp = path.join(src, entry.name);
+    const dp = path.join(dst, entry.name);
+    if (entry.isDirectory()) {
+      copyFilteredTree(sp, dp, exts);
+      continue;
+    }
+    if (entry.isFile() && exts.some((ext) => entry.name.endsWith(ext))) {
+      fs.mkdirSync(path.dirname(dp), { recursive: true });
+      fs.copyFileSync(sp, dp);
+    }
+  }
+}
+
+function copyFileIfExists(src: string, dst: string): void {
+  if (!fs.existsSync(src)) return;
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+}
+
+function stagePackageRuntime(): string {
+  const sourceRoot = path.resolve(PKG_ROOT);
+  const runtimeRoot = path.resolve(PACKAGE_RUNTIME);
+  if (sourceRoot === runtimeRoot) return runtimeRoot;
+
+  fs.mkdirSync(HUB_DIR, { recursive: true, mode: 0o700 });
+  fs.chmodSync(HUB_DIR, 0o700);
+  fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  fs.mkdirSync(runtimeRoot, { recursive: true, mode: 0o700 });
+
+  copyFilteredTree(path.join(sourceRoot, "hub-server"), path.join(runtimeRoot, "hub-server"), [".ts", ".json", ".lock"]);
+  copyFilteredTree(path.join(sourceRoot, "hub-client"), path.join(runtimeRoot, "hub-client"), [".ts", ".json", ".lock", ".mcp.json"]);
+  copyFilteredTree(path.join(sourceRoot, "hub-dashboard"), path.join(runtimeRoot, "hub-dashboard"), [".ts", ".tsx", ".js", ".json", ".css", ".html", ".svg", ".lock", ".md"]);
+  copyFilteredTree(path.join(sourceRoot, "forge-cli"), path.join(runtimeRoot, "forge-cli"), [".ts", ".md"]);
+  copyFilteredTree(path.join(sourceRoot, "hub-test-harness"), path.join(runtimeRoot, "hub-test-harness"), [".ts"]);
+  copyFileIfExists(path.join(sourceRoot, "cli.ts"), path.join(runtimeRoot, "cli.ts"));
+  copyFileIfExists(path.join(sourceRoot, "README.md"), path.join(runtimeRoot, "README.md"));
+  copyFileIfExists(path.join(sourceRoot, "配置.md"), path.join(runtimeRoot, "配置.md"));
+  copyFileIfExists(path.join(sourceRoot, "部署.md"), path.join(runtimeRoot, "部署.md"));
+
+  return runtimeRoot;
+}
+
 function which(cmd: string): string | null {
   try {
     return execFileSync("/usr/bin/which", [cmd], { encoding: "utf-8" }).trim() || null;
@@ -418,9 +493,7 @@ function registerMcp(): void {
   // start. process.execPath is the bun binary currently running this install
   // script — using it guarantees the same bun that ran install will be used
   // by the MCP subprocess.
-  const bunPath = process.execPath && process.execPath.includes("bun")
-    ? process.execPath
-    : which("bun") ?? "bun";
+  const bunPath = resolveBunPath();
 
   mcpServers.hub = {
     command: bunPath,

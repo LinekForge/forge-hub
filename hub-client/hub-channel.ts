@@ -17,7 +17,7 @@ import {
 import { z } from "zod/v4-mini";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   getSessionConfigPaths,
   isChannelMode,
@@ -46,6 +46,9 @@ function readAuthToken(): string {
 }
 
 const HUB_API_TOKEN = readAuthToken();
+const BUN_BINARY = process.execPath && process.execPath.includes("bun")
+  ? process.execPath
+  : "bun";
 
 function authHeaders(): Record<string, string> {
   return HUB_API_TOKEN ? { "Authorization": `Bearer ${HUB_API_TOKEN}` } : {};
@@ -72,6 +75,17 @@ const { identitiesFile: IDENTITIES_FILE } = getSessionConfigPaths(HUB_DIR);
 // 我们自己写 ~/.forge-hub/hub-client.log（每 instance 一行 append，带 INSTANCE_ID + timestamp）——
 // 方便事后 debug 类似"Hub 推了 252 条但 client 没注入"这种没有证据的事故。
 const CLIENT_LOG_FILE = path.join(HUB_DIR, "hub-client.log");
+const HUB_STATUS_TIMEOUT_MS = 2_000;
+const HUB_RECOVERY_POLL_MS = 1_000;
+const WS_RETRY_START_MS = 1_000;
+const WS_RETRY_MAX_MS = 30_000;
+const CHANNEL_HANDLER_READY_TIMEOUT_MS = 60_000;
+const CHANNEL_HANDLER_READY_POLL_MS = 250;
+const CHANNEL_READY_LOGS = new Set([
+  "Channel notifications registered",
+  "Channel notifications re-registered after reconnect",
+]);
+const PROCESS_STARTED_AT = new Date();
 
 function writeFileLog(level: "INFO" | "ERROR", msg: string): void {
   try {
@@ -92,63 +106,186 @@ function logError(msg: string) {
   writeFileLog("ERROR", msg);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function probeHubStatus(timeoutMs = HUB_STATUS_TIMEOUT_MS): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${HUB_URL}/status`, {
+      headers: authHeaders(),
+      signal: controller.signal,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const SESSION_CONFIG = readAndClearSessionConfig(getSessionConfigPaths(HUB_DIR), INSTANCE_ID, logError);
 
-// ── Orphan Cleanup ─────────────────────────────────────────────────────────
+// ── Claude Code Channel Handler Readiness ─────────────────────────────────
 
-function cleanOrphans(): void {
-  try {
-    const output = execFileSync("ps", ["-eo", "pid,tty,command"], { encoding: "utf-8" });
+let channelHandlerReady = false;
 
-    let cleaned = 0;
-    for (const line of output.split("\n")) {
-      if (!line.includes("hub-channel") || line.includes("grep")) continue;
-      const parts = line.trim().split(/\s+/);
-      const pid = parseInt(parts[0], 10);
-      const tty = parts[1];
-      if (pid === process.pid) continue;
-      if (tty !== "??" && tty !== "?") continue;
-      try { process.kill(pid, "SIGTERM"); cleaned++; } catch {}
+function djb2Hash(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+function sanitizeMcpLogPathPart(name: string): string {
+  const sanitized = name.replace(/[^a-zA-Z0-9]/g, "-");
+  if (sanitized.length <= 200) return sanitized;
+  return `${sanitized.slice(0, 200)}-${Math.abs(djb2Hash(name)).toString(36)}`;
+}
+
+function getClaudeMcpLogDirs(serverName: string, cwd: string): string[] {
+  if (process.platform !== "darwin") return [];
+  const home = process.env.HOME;
+  if (!home) return [];
+
+  const base = path.join(home, "Library", "Caches", "claude-cli-nodejs");
+  const projectDir = sanitizeMcpLogPathPart(cwd);
+  const logDir = `mcp-logs-${sanitizeMcpLogPathPart(serverName)}`;
+  const dirs = [path.join(base, projectDir, logDir)];
+
+  // Historical notes disagreed on whether the leading "-" is kept. Claude Code
+  // keeps it, but trying both paths makes this diagnostic dependency tolerant.
+  const withoutLeadingDash = projectDir.replace(/^-+/, "");
+  if (withoutLeadingDash && withoutLeadingDash !== projectDir) {
+    dirs.push(path.join(base, withoutLeadingDash, logDir));
+  }
+
+  return dirs;
+}
+
+function listClaudeMcpLogFiles(serverName: string): string[] {
+  const files: string[] = [];
+  for (const dir of getClaudeMcpLogDirs(serverName, process.cwd())) {
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (entry.endsWith(".jsonl")) files.push(path.join(dir, entry));
+      }
+    } catch {
+      // Directory may not exist yet; wait loop will retry.
     }
-    if (cleaned > 0) log(`🧹 清理 ${cleaned} 个孤儿进程`);
-  } catch {}
+  }
+  return files.sort();
+}
+
+function fileMentionsThisInstance(file: string): boolean {
+  try {
+    return fs.readFileSync(file, "utf-8").includes(INSTANCE_ID);
+  } catch {
+    return false;
+  }
+}
+
+function selectMcpLogFilesForThisProcess(files: string[]): string[] {
+  const withInstance = files.filter(fileMentionsThisInstance);
+  if (withInstance.length > 0) return withInstance.slice(-3);
+  return files.slice(-3);
+}
+
+function hasChannelHandlerReadyLogSince(since: Date): boolean {
+  const files = selectMcpLogFilesForThisProcess(listClaudeMcpLogFiles("hub"));
+  const sinceMs = since.getTime();
+
+  for (const file of files) {
+    let content: string;
+    try {
+      content = fs.readFileSync(file, "utf-8");
+    } catch {
+      continue;
+    }
+
+    for (const line of content.split("\n")) {
+      if (
+        !line.includes("Channel notifications registered") &&
+        !line.includes("Channel notifications re-registered after reconnect")
+      ) {
+        continue;
+      }
+
+      try {
+        const event = JSON.parse(line) as { debug?: unknown; timestamp?: unknown; cwd?: unknown };
+        if (typeof event.debug !== "string" || !CHANNEL_READY_LOGS.has(event.debug)) continue;
+        if (typeof event.cwd === "string" && event.cwd !== process.cwd()) continue;
+        if (typeof event.timestamp !== "string") continue;
+        const timestamp = Date.parse(event.timestamp);
+        if (!Number.isFinite(timestamp) || timestamp < sinceMs) continue;
+        return true;
+      } catch {
+        // Tailing JSONL can see a partial line; ignore and retry.
+      }
+    }
+  }
+
+  return false;
+}
+
+async function waitForChannelHandlerReady(timeoutMs = CHANNEL_HANDLER_READY_TIMEOUT_MS): Promise<boolean> {
+  if (channelHandlerReady) return true;
+
+  const deadline = Date.now() + timeoutMs;
+  const dirs = getClaudeMcpLogDirs("hub", process.cwd());
+  log("WebSocket 已连接，等待 Claude Code channel handler 注册...");
+
+  while (Date.now() < deadline) {
+    if (hasChannelHandlerReadyLogSince(PROCESS_STARTED_AT)) {
+      channelHandlerReady = true;
+      await sleep(0);
+      log("Claude Code channel handler 已注册");
+      return true;
+    }
+    await sleep(CHANNEL_HANDLER_READY_POLL_MS);
+  }
+
+  logError(
+    `等待 Claude Code channel handler 注册超时 (${timeoutMs / 1000}s)，` +
+      `不发送 ready，避免历史被丢弃。MCP log dirs: ${dirs.join(", ") || "<unavailable>"}`,
+  );
+  return false;
 }
 
 // ── Hub Auto-Start ──────────────────────────────────────────────────────────
 
 async function ensureHubRunning(): Promise<boolean> {
+  if (await probeHubStatus()) {
+    return true;
+  }
+
+  // Hub not running, try to start it
+  log("Hub 未运行，尝试自动启动...");
   try {
-    const res = await fetch(`${HUB_URL}/status`, { headers: authHeaders() });
-    return res.ok;
-  } catch {
-    // Hub not running, try to start it
-    log("Hub 未运行，尝试自动启动...");
-    try {
-      const hubPath = path.join(HUB_DIR, "hub.ts");
-      const child = spawn("bun", [hubPath], {
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref();
+    const hubPath = path.join(HUB_DIR, "hub.ts");
+    const child = spawn(BUN_BINARY, [hubPath], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
 
-      // Wait for Hub to start
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 500));
-        try {
-          const res = await fetch(`${HUB_URL}/status`, { headers: authHeaders() });
-          if (res.ok) {
-            log("Hub 自动启动成功");
-            return true;
-          }
-        } catch {}
+    // Wait for Hub to start
+    for (let i = 0; i < 20; i++) {
+      await sleep(500);
+      if (await probeHubStatus()) {
+        log("Hub 自动启动成功");
+        return true;
       }
-
-      logError("Hub 启动超时（10s）");
-      return false;
-    } catch (err) {
-      logError(`Hub 启动失败: ${String(err)}`);
-      return false;
     }
+
+    logError("Hub 启动超时（10s）");
+    return false;
+  } catch (err) {
+    logError(`Hub 启动失败: ${String(err)}`);
+    return false;
   }
 }
 
@@ -298,10 +435,11 @@ async function connectWebSocket(): Promise<void> {
     let mcpReady = false;
 
     ws.onopen = async () => {
-      log("WebSocket 已连接，等待 MCP 初始化...");
-
-      // Wait for MCP to fully initialize (resume needs more time than fresh start)
-      await new Promise((r) => setTimeout(r, 5000));
+      const ready = await waitForChannelHandlerReady();
+      if (!ready) {
+        ws.close(1013, "Claude Code channel handler not ready");
+        return;
+      }
       mcpReady = true;
 
       // Build ready message from session config
@@ -355,21 +493,60 @@ async function connectWebSocket(): Promise<void> {
 // ── Auto-Reconnect ──────────────────────────────────────────────────────────
 
 async function connectWithRetry(): Promise<void> {
-  let retryDelay = 1000;
-  const MAX_RETRY = 30_000;
+  let retryDelay = WS_RETRY_START_MS;
   let connectCount = 0;
 
   while (true) {
+    if (!await probeHubStatus()) {
+      const started = await ensureHubRunning();
+      if (!started) {
+        log("Hub 不可达，开始轮询 /status 等待恢复...");
+      }
+      while (!await probeHubStatus()) {
+        await sleep(HUB_RECOVERY_POLL_MS);
+      }
+      retryDelay = WS_RETRY_START_MS;
+      log("Hub 已恢复，立即重连 WebSocket...");
+    }
+
     try {
       connectCount++;
       log(`WebSocket 连接尝试 #${connectCount}...`);
       await connectWebSocket();
-      retryDelay = 1000;
+      retryDelay = WS_RETRY_START_MS;
     } catch (err) {
-      log(`WebSocket 断开，${retryDelay / 1000}s 后重连... (${String(err)})`);
-      await new Promise((r) => setTimeout(r, retryDelay));
-      retryDelay = Math.min(retryDelay * 2, MAX_RETRY);
+      const reason = String(err);
+      if (!await probeHubStatus()) {
+        log(`WebSocket 断开，Hub 当前不可达；等待恢复后立即重连... (${reason})`);
+        retryDelay = WS_RETRY_START_MS;
+        continue;
+      }
+
+      log(`WebSocket 断开，但 Hub 仍在线；${retryDelay / 1000}s 后重连... (${reason})`);
+      await sleep(retryDelay);
+      retryDelay = Math.min(retryDelay * 2, WS_RETRY_MAX_MS);
     }
+  }
+}
+
+function persistToolIdentity(config: SessionConfig | null | undefined): void {
+  const nextIdentity: Record<string, unknown> = { isChannel: false, lastSeenAt: new Date().toISOString() };
+  if (config?.tag) nextIdentity.tag = config.tag;
+  if (config?.description) nextIdentity.description = config.description;
+
+  try {
+    fs.mkdirSync(path.dirname(IDENTITIES_FILE), { recursive: true });
+    const raw = fs.existsSync(IDENTITIES_FILE) ? fs.readFileSync(IDENTITIES_FILE, "utf-8") : "{}";
+    const all = JSON.parse(raw);
+    all[INSTANCE_ID] = { ...(all[INSTANCE_ID] ?? {}), ...nextIdentity };
+    fs.writeFileSync(IDENTITIES_FILE, JSON.stringify(all, null, 2), "utf-8");
+    if (config?.description) {
+      log(`📝 工具模式描述传递: ${config.description}`);
+    } else {
+      log("🧰 工具模式已登记到实例列表");
+    }
+  } catch (err) {
+    logError(`工具模式实例登记失败: ${String(err)}`);
   }
 }
 
@@ -631,37 +808,26 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  cleanOrphans();
-
   await mcpServer.connect(new StdioServerTransport());
   log("MCP 连接就绪");
-
-  // Check Hub
-  const hubReady = await ensureHubRunning();
 
   // Channel mode = has channels subscription. Tool mode = no channels (even if has description)
   const isChannel = isChannelMode(SESSION_CONFIG);
 
-  // Tool mode with description: persist name for menubar display
-  if (!isChannel && SESSION_CONFIG?.description) {
-    try {
-      const raw = fs.existsSync(IDENTITIES_FILE) ? fs.readFileSync(IDENTITIES_FILE, "utf-8") : "{}";
-      const all = JSON.parse(raw);
-      all[INSTANCE_ID] = { ...(all[INSTANCE_ID] ?? {}), description: SESSION_CONFIG.description };
-      fs.writeFileSync(IDENTITIES_FILE, JSON.stringify(all, null, 2), "utf-8");
-      log(`📝 工具模式描述传递: ${SESSION_CONFIG.description}`);
-    } catch {}
+  // Tool mode: persist identity so Hub/Dashboard can show this instance as "仅工具"
+  if (!isChannel) {
+    persistToolIdentity(SESSION_CONFIG);
   }
 
-  if (hubReady) {
-    if (isChannel) {
-      connectWithRetry();
-      log(`Hub Client 已启动 ✦ WebSocket channel 模式 (instance: ${INSTANCE_ID})`);
-    } else {
-      log(`Hub Client 已启动 · 工具模式（不注册 peer）`);
-    }
+  if (isChannel) {
+    void connectWithRetry();
+    log(`Hub Client 已启动 ✦ WebSocket channel 模式 (instance: ${INSTANCE_ID})`);
   } else {
-    log("⚠ Hub 未就绪，工具调用会失败。请启动 Hub 或使用直连模式。");
+    const hubReady = await ensureHubRunning();
+    if (!hubReady) {
+      log("⚠ Hub 未就绪，工具调用会失败。请启动 Hub 或使用直连模式。");
+    }
+    log(`Hub Client 已启动 · 工具模式（不注册 peer）`);
   }
 }
 

@@ -44,6 +44,12 @@ export interface HubConfig {
    *   "none" = 关闭 ASR，agent 只拿到 audio path 占位
    */
   asr_plugin_override?: Record<string, "hook" | "none">;
+  /**
+   * @mention 消息的分发模式：
+   * - "direct"：@消息只发给被@的实例，其他实例看不到（默认）
+   * - "broadcast"：@消息也广播给所有订阅者，meta 里标 handler
+   */
+  mention_mode?: "broadcast" | "direct";
 }
 
 // ── 通道插件接口 ────────────────────────────────────────────────────────────
@@ -177,10 +183,11 @@ export interface AllowEntry {
   nickname: string;
 }
 
-/** 通道的授权列表。存在 `state/{channel}/allowlist.json`。通道必须统一这个 schema——`isApprovalOwner`（hub.ts）依赖 `allowed[0].id` 找主人 */
+/** 通道的授权列表。存在 `state/{channel}/allowlist.json`。`approval_owner_id` 显式指定远程审批主人，避免依赖 allowed 顺序。 */
 export interface Allowlist {
   allowed: AllowEntry[];
   auto_allow_next: boolean;
+  approval_owner_id?: string;
 }
 
 // ── 消息 ────────────────────────────────────────────────────────────────────
@@ -191,8 +198,38 @@ export interface InboundMessage {
   from: string;
   fromId: string;
   content: string;
+  /**
+   * Dashboard 指定的"当前接手实例"。只在本机 Homeland UI 入站使用；
+   * 存在时，router 应优先把消息交给这个实例，而不是再走 primary/broadcast。
+   */
+  targetInstanceId?: string;
   /** 通道特有数据（context_token 等） */
   raw: Record<string, unknown>;
+}
+
+export type InboundHandleReason =
+  | "accepted"
+  | "lock_triggered"
+  | "allowlist_error"
+  | "unauthorized_sender"
+  | "approval_malformed"
+  | "invalid_permission_id"
+  | "approval_instance_offline"
+  | "locked"
+  | "no_online_instance"
+  | "no_subscribed_instance"
+  | "unresolved_mention"
+  | "ambiguous_mention"
+  | "ambiguous_route"
+  | "handler_missing"
+  | "internal_error";
+
+export interface InboundHandleResult {
+  accepted: boolean;
+  reason: InboundHandleReason;
+  detail?: string;
+  targets?: string[];
+  targeted?: boolean;
 }
 
 /** 出站发送参数（Hub → 通道插件） */
@@ -283,14 +320,33 @@ export interface ConnectedInstance {
   tag?: string;
   /** 描述（长，如 Forge 引擎） */
   description?: string;
+  /** true = 通道实例（可接收 Hub 消息）；false = 仅工具实例 */
+  isChannel?: boolean;
   /** 订阅的通道（undefined = 全部，["wechat"] = 只听微信） */
   channels?: string[];
   connectedAt: string;
   summary?: string;
   /** WebSocket 连接引用 */
   ws: import("bun").ServerWebSocket<WsData>;
-  /** 发送事件 */
-  send(event: HubEvent): void;
+  /**
+   * 发送事件。返回 Bun ServerWebSocket 的 send status：
+   * - `> 0`：已发送字节数
+   * - `-1`：发生 backpressure，但消息未被立即丢弃
+   * - `0`：消息被丢弃或发送失败
+   */
+  send(event: HubEvent): number;
   /** 关闭连接 */
   close(): void;
+}
+
+export interface KnownInstance {
+  id: string;
+  tag?: string;
+  description?: string;
+  isChannel?: boolean;
+  channels?: string[];
+  presence: "live" | "known";
+  connectedAt?: string;
+  lastSeenAt?: string;
+  summary?: string;
 }

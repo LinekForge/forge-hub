@@ -226,9 +226,12 @@ async function pollInner(): Promise<void> {
     const isSelfChat = !isGroup && selfAddresses.has(sender.toLowerCase());
     if (isSelfChat && consumeEcho(r.chat_guid, text || "\x00att")) continue;
 
+    const isAuthorizedGroup = isGroup && isAllowed(r.chat_guid);
+    const isAuthorizedDirect = !isGroup && isAllowed(sender);
+
     // Allowlist check (self-chat bypasses)
     if (!isSelfChat) {
-      if (!isAllowed(sender)) {
+      if (!isAuthorizedDirect && !isAuthorizedGroup) {
         hub.logError(`⛔ 拒绝未授权: ${sender}, 原文前 50: "${(text || "[非文本]").slice(0, 50)}"`);
         hub.pushMessage({
           channel: "imessage",
@@ -241,7 +244,12 @@ async function pollInner(): Promise<void> {
       }
     }
 
-    const displayName = isSelfChat ? "用户（自聊）" : getNickname(sender);
+    const senderDisplay = getNickname(sender);
+    const displayName = isSelfChat
+      ? "用户（自聊）"
+      : isAuthorizedGroup
+        ? `${senderDisplay} @ ${getNickname(r.chat_guid)}`
+        : senderDisplay;
 
     // Extract attachment file paths from chat.db
     let attachmentInfo = "";
@@ -283,7 +291,11 @@ async function pollInner(): Promise<void> {
       from: displayName,
       fromId: r.chat_guid, // use chat_guid as ID (needed for reply)
       content,
-      raw: { handle_id: sender, is_group: isGroup },
+      raw: {
+        handle_id: sender,
+        is_group: isGroup,
+        auth_sender_id: isAuthorizedGroup ? r.chat_guid : sender,
+      },
     });
 
     // History recorded by Hub layer

@@ -265,6 +265,7 @@ async function startPolling(): Promise<void> {
       hub.logError(`轮询异常: ${String(err)}`);
       if (totalFailures >= FAILURE_CAP) {
         hub.logError(`💀 微信轮询累计异常 ${totalFailures} 次达上限，停止`);
+        plugin.stoppedReason = "cap_reached";
         break;
       }
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
