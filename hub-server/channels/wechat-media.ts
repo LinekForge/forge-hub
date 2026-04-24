@@ -10,6 +10,7 @@ import path from "node:path";
 import { apiFetch, generateClientId } from "./wechat-ilink.js";
 import { MSG_TYPE_BOT, MSG_STATE_FINISH } from "./wechat-types.js";
 import { execFileText } from "../process-utils.js";
+import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -119,7 +120,6 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
     if (item.type === 2 && item.image_item) {
       const queryParam = item.image_item.media?.encrypt_query_param;
       const keyStr = item.image_item.aeskey || item.image_item.media?.aes_key;
-      process.stderr.write(`[wechat-media] 图片下载: queryParam=${queryParam ? queryParam.slice(0, 40) + "..." : "null"}, aesKey=${keyStr ? "有" : "null"}, media=${JSON.stringify(item.image_item.media ?? {}).slice(0, 200)}\n`);
       if (!queryParam || !keyStr) return null;
       const encrypted = await cdnDownload(queryParam);
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
@@ -138,10 +138,11 @@ export async function downloadMediaItem(item: MessageItem, mediaDir: string): Pr
       const encrypted = await cdnDownload(queryParam);
       const decrypted = decryptAes128Ecb(encrypted, parseAesKey(keyStr));
       const origName = item.file_item.file_name || `file_${ts}`;
-      const fileName = `${ts}_${origName}`;
+      const fileName = sanitizeMediaFileName(origName, ts);
       const filePath = path.join(mediaDir, fileName);
       await fs.promises.writeFile(filePath, decrypted);
-      return { type: "file", filePath, fileName: origName };
+      await assertRealPathInsideDir(mediaDir, filePath);
+      return { type: "file", filePath, fileName };
     }
 
     // Video

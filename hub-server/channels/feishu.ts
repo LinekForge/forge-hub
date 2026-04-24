@@ -8,10 +8,9 @@
 
 import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
-import { redactSensitive } from "../config.js";
+import { STATE_DIR, redactSensitive } from "../config.js";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { execFileText } from "../process-utils.js";
@@ -75,7 +74,7 @@ function getNickname(userId: string): string {
 
 // ── Media Download ──────────────────────────────────────────────────────────
 
-const FEISHU_MEDIA_DIR = join(homedir(), ".forge-hub", "state", "feishu", "media");
+const FEISHU_MEDIA_DIR = join(STATE_DIR, "feishu", "media");
 
 async function downloadFeishuMedia(
   messageId: string,

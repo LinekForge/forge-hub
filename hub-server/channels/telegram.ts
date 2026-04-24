@@ -10,6 +10,7 @@ import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import fsMod from "node:fs";
 import pathMod from "node:path";
 import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
+import { STATE_DIR } from "../config.js";
 
 // ── Module State ────────────────────────────────────────────────────────────
 
@@ -95,7 +96,7 @@ function isAllowed(chatId: string): boolean {
 
 // ── Media Download ──────────────────────────────────────────────────────────
 
-const TG_MEDIA_DIR = `${process.env.HOME}/.forge-hub/state/telegram/media`;
+const TG_MEDIA_DIR = pathMod.join(STATE_DIR, "telegram", "media");
 
 async function downloadTgFile(fileId: string, fileName: string): Promise<string | null> {
   try {

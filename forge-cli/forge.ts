@@ -34,17 +34,18 @@ import { resolveSelfTestHarnessPath } from "./self-test.js";
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const HUB_URL = process.env.FORGE_HUB_URL ?? "http://localhost:9900";
+const HUB_DIR = process.env.FORGE_HUB_DIR ?? path.join(process.env.HOME ?? "~", ".forge-hub");
+const API_TOKEN_FILE = path.join(HUB_DIR, "api-token");
+const LOCK_PHRASE_FILE = path.join(HUB_DIR, "lock-phrase.json");
 
-// Token source: env var first (for test / override), then ~/.forge-hub/api-token
+// Token source: env var first (for test / override), then $HUB_DIR/api-token
 // file (chmod 600). See hub-client/hub-channel.ts for rationale.
 function readAuthToken(): string {
   const fromEnv = process.env.HUB_API_TOKEN;
   if (fromEnv) return fromEnv;
   try {
-    const home = process.env.HOME ?? "~";
-    const tokenFile = path.join(home, ".forge-hub", "api-token");
-    if (fs.existsSync(tokenFile)) {
-      return fs.readFileSync(tokenFile, "utf-8").trim();
+    if (fs.existsSync(API_TOKEN_FILE)) {
+      return fs.readFileSync(API_TOKEN_FILE, "utf-8").trim();
     }
   } catch { /* ignore */ }
   return "";
@@ -61,6 +62,25 @@ function authHeaders(): Record<string, string> {
 function die(msg: string): never {
   console.error(`错误: ${msg}`);
   process.exit(1);
+}
+
+function writeSensitiveJsonFile(filePath: string, value: unknown): void {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(value, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    fs.renameSync(tmpPath, filePath);
+    fs.chmodSync(filePath, 0o600);
+  } catch (err) {
+    try { fs.rmSync(tmpPath, { force: true }); } catch {}
+    throw err;
+  }
 }
 
 async function hubGet(endpoint: string): Promise<unknown> {
@@ -139,13 +159,12 @@ async function hubStatus() {
 function hubSetLockPhrase(args: string[]) {
   const phrase = args.join(" ").trim();
   if (!phrase) die("用法: fh hub set-lock-phrase <暗号>");
-  const phraseFile = `${process.env.HOME}/.forge-hub/lock-phrase.json`;
-  fs.writeFileSync(phraseFile, JSON.stringify({ phrase, updatedAt: new Date().toISOString() }, null, 2), "utf-8");
+  writeSensitiveJsonFile(LOCK_PHRASE_FILE, { phrase, updatedAt: new Date().toISOString() });
   console.log(`锁定暗号已设置。查看：fh hub lock-phrase`);
 }
 
 function hubLockPhrase() {
-  const phraseFile = `${process.env.HOME}/.forge-hub/lock-phrase.json`;
+  const phraseFile = LOCK_PHRASE_FILE;
   if (!fs.existsSync(phraseFile)) {
     console.log("未设置锁定暗号。用 fh hub set-lock-phrase <暗号> 设置。");
     return;
@@ -608,8 +627,8 @@ async function hubListen(args: string[]) {
 
 // ── Hub Allow / Revoke ─────────────────────────────────────────────────────
 
-const HUB_STATE = path.join(process.env.HOME ?? "~", ".forge-hub", "state");
-const AUDIT_FILE = path.join(process.env.HOME ?? "~", ".forge-hub", "audit.jsonl");
+const HUB_STATE = path.join(HUB_DIR, "state");
+const AUDIT_FILE = path.join(HUB_DIR, "audit.jsonl");
 
 type HubAllowlist = {
   allowed: { id: string; nickname: string }[];

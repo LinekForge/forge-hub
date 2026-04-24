@@ -28,16 +28,17 @@ import {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const HUB_URL = process.env.FORGE_HUB_URL ?? "http://localhost:9900";
+// HUB_DIR：和 hub-server 的 config.ts 保持一致，都读 FORGE_HUB_DIR env
+const HUB_DIR = process.env.FORGE_HUB_DIR ?? path.join(process.env.HOME ?? "~", ".forge-hub");
 
-// Token source: env var first (for test / override), then ~/.forge-hub/api-token
+// Token source: env var first (for test / override), then $HUB_DIR/api-token
 // file (chmod 600). File is the canonical store so plist-set tokens reach
 // MCP subprocess even when Claude Code didn't inherit the plist env.
 function readAuthToken(): string {
   const fromEnv = process.env.HUB_API_TOKEN;
   if (fromEnv) return fromEnv;
   try {
-    const home = process.env.HOME ?? "~";
-    const tokenFile = path.join(home, ".forge-hub", "api-token");
+    const tokenFile = path.join(HUB_DIR, "api-token");
     if (fs.existsSync(tokenFile)) {
       return fs.readFileSync(tokenFile, "utf-8").trim();
     }
@@ -66,8 +67,6 @@ const INSTANCE_ID = getInstanceId();
 
 // ── Session Config ─────────────────────────────────────────────────────────
 
-// HUB_DIR：和 hub-server 的 config.ts 保持一致，都读 FORGE_HUB_DIR env
-const HUB_DIR = process.env.FORGE_HUB_DIR ?? path.join(process.env.HOME ?? "~", ".forge-hub");
 const { identitiesFile: IDENTITIES_FILE } = getSessionConfigPaths(HUB_DIR);
 
 // ── File log 辅助 ──────────────────────────────────────────────────────────

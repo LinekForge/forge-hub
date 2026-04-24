@@ -11,7 +11,8 @@ import type { AccountData, Allowlist, WeixinMessage } from "./wechat-types.js";
 import { MSG_TYPE_USER } from "./wechat-types.js";
 import { getUpdates, sendText, getConfig, sendTyping } from "./wechat-ilink.js";
 import { uploadAndSendMedia, sendTtsAsMp3File, downloadMediaItem } from "./wechat-media.js";
-import { redactSensitive } from "../config.js";
+import { STATE_DIR, redactSensitive } from "../config.js";
+import path from "node:path";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -96,7 +97,7 @@ function getNickname(senderId: string): string {
 
 // ── Content Extraction ──────────────────────────────────────────────────────
 
-const MEDIA_DIR = `${process.env.HOME}/.forge-hub/state/wechat/media`;
+const MEDIA_DIR = path.join(STATE_DIR, "wechat", "media");
 
 async function extractContent(msg: WeixinMessage): Promise<string> {
   if (!msg.item_list?.length) return "";
@@ -325,18 +326,16 @@ const plugin: ChannelPlugin = {
       }
 
       if (type === "file" && filePath) {
-        const mediaDir = `${process.env.HOME}/.forge-hub/state/wechat/media`;
-        await uploadAndSendMedia(account.baseUrl, account.token, to, filePath, contextToken, mediaDir);
+        await uploadAndSendMedia(account.baseUrl, account.token, to, filePath, contextToken, MEDIA_DIR);
         cancelTyping();
         hub.log(`→ 文件: ${filePath.slice(0, 60)}`);
         return { success: true };
       }
 
       if (type === "voice") {
-        const mediaDir = `${process.env.HOME}/.forge-hub/state/wechat/media`;
         // 微信 iLink 不接原生 silk 语音（静默吞）——降级为 mp3 附件文件
         // 详见 wechat-media.ts `sendTtsAsMp3File` 的注释
-        await sendTtsAsMp3File(account.baseUrl, account.token, to, content, contextToken, mediaDir);
+        await sendTtsAsMp3File(account.baseUrl, account.token, to, content, contextToken, MEDIA_DIR);
         cancelTyping();
         hub.log(`→ 语音(mp3 附件): "${content.slice(0, 30)}..."`);
         return { success: true };
