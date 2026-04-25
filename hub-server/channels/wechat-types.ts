@@ -24,6 +24,7 @@ export interface WeixinMessage {
   to_user_id?: string;
   client_id?: string;
   session_id?: string;
+  message_id?: string;
   message_type?: number;
   message_state?: number;
   item_list?: MessageItem[];

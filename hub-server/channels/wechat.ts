@@ -6,7 +6,7 @@
  */
 
 import { ChannelStartSkipError } from "../types.js";
-import type { ChannelPlugin, HubAPI, SendParams, SendResult } from "../types.js";
+import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import type { AccountData, Allowlist, WeixinMessage } from "./wechat-types.js";
 import { MSG_TYPE_USER } from "./wechat-types.js";
 import { getUpdates, sendText, getConfig, sendTyping } from "./wechat-ilink.js";
@@ -17,13 +17,12 @@ import path from "node:path";
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const MAX_CONSECUTIVE_FAILURES = 3;
-// 连续 FAILURE_CAP 次失败彻底停止轮询——避免 ilink 长期挂了无限 retry 淹日志 + 糟蹋 CPU。
-// 选 60：以 backoff 30s × 60 = 30 分钟。用户在 30 min 内会通过其他通道得知 Hub 异常。
 const FAILURE_CAP = 60;
 const BACKOFF_DELAY_MS = 30_000;
 const RETRY_DELAY_MS = 2_000;
 const TYPING_STATUS_TYPING = 1;
 const TYPING_STATUS_CANCEL = 2;
+const DEDUP_CAPACITY = 500;
 
 // ── Module State ────────────────────────────────────────────────────────────
 
@@ -34,6 +33,33 @@ let hub: HubAPI;
 let account: AccountData | null = null;
 let polling = false;
 let shouldStop = false;
+
+const seenMessageIds = new Set<string>();
+function dedupMessage(msgId: string | undefined): boolean {
+  if (!msgId) return false;
+  if (seenMessageIds.has(msgId)) return true;
+  seenMessageIds.add(msgId);
+  if (seenMessageIds.size > DEDUP_CAPACITY) {
+    const first = seenMessageIds.values().next().value!;
+    seenMessageIds.delete(first);
+  }
+  return false;
+}
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, "").replace(/```$/g, ""))
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, "$1")
+    .replace(/(?<!\w)_([^_]+?)_(?!\w)/g, "$1")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[>\s]*>\s?/gm, "")
+    .replace(/^[-*+]\s+/gm, "• ")
+    .replace(/^\d+\.\s+/gm, (m) => m);
+}
 
 // ── Typing Indicator ─────────────────────────────────────────────────────────
 
@@ -216,6 +242,7 @@ async function startPolling(): Promise<void> {
       // Process messages
       for (const msg of resp.msgs ?? []) {
         if (msg.message_type !== MSG_TYPE_USER) continue;
+        if (dedupMessage(msg.message_id)) continue;
 
         const content = await extractContent(msg);
         if (!content) continue;
@@ -318,10 +345,10 @@ const plugin: ChannelPlugin = {
       const cancelTyping = await handleTypingBeforeSend(to, contextToken);
 
       if (type === "text") {
-        await sendText(account.baseUrl, account.token, to, content, contextToken);
+        const cleaned = stripMarkdown(content);
+        await sendText(account.baseUrl, account.token, to, cleaned, contextToken);
         cancelTyping();
-        hub.log(`→ ${to.slice(0, 16)}...: ${content.slice(0, 60)}`);
-        // History recorded by Hub layer
+        hub.log(`→ ${to.slice(0, 16)}...: ${cleaned.slice(0, 60)}`);
         return { success: true };
       }
 
