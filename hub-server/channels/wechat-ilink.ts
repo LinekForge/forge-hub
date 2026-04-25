@@ -10,7 +10,8 @@ import { MSG_TYPE_BOT, MSG_STATE_FINISH, MSG_ITEM_TEXT } from "./wechat-types.js
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const CHANNEL_VERSION = "0.2.0";
+const CHANNEL_VERSION = "2.0.0";
+const CLIENT_VERSION = String(2 << 16 | 0 << 8 | 0); // 0x00MMNNPP → 131072
 const LONG_POLL_TIMEOUT_MS = 35_000;
 const TYPING_TIMEOUT_MS = 10_000;
 
@@ -26,6 +27,8 @@ function buildHeaders(token?: string, body?: string): Record<string, string> {
     "Content-Type": "application/json",
     AuthorizationType: "ilink_bot_token",
     "X-WECHAT-UIN": randomWechatUin(),
+    "iLink-App-Id": "bot",
+    "iLink-App-ClientVersion": CLIENT_VERSION,
   };
   if (body) headers["Content-Length"] = String(Buffer.byteLength(body, "utf-8"));
   if (token?.trim()) headers.Authorization = `Bearer ${token.trim()}`;

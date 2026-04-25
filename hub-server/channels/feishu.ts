@@ -338,8 +338,8 @@ const plugin: ChannelPlugin = {
     hub = hubAPI;
 
     // S2: detect stale lark-cli event subscribers before starting our own.
-    // 飞书 app 只允许一个 WebSocket listener——多进程同时订阅会抢消息（事件
-    // 只投递一次，先拿到的进程消费掉）。常见触发：用户的 wrapper 脚本自己
+    // 飞书 app 支持最多 50 个 WebSocket listener（集群模式，事件随机投递一个
+    // client），但多进程同时订阅仍会抢消息。常见触发：用户的 wrapper 脚本自己
     // spawn lark-cli、之前手动 debug 留下的进程、或 forge-hub 前一次异常退出
     // 未走 stop() 的残留。不自动 kill（可能是用户有意在跑），log 告诉用户
     // 怎么清 + 本次启动跳过。watchdog 不会自动重启（stoppedReason="config"）。
@@ -351,7 +351,7 @@ const plugin: ChannelPlugin = {
         const pids = existing.split("\n").join(", ");
         hub.logError(
           `⚠️ 已有 lark-cli event +subscribe 进程在跑 (pid: ${pids})。` +
-          `飞书 app 只允许一个 WebSocket listener——多进程会抢消息。` +
+          `飞书 app 多进程订阅会抢消息（事件只投递给一个 client）。` +
           `请先 \`pkill -f 'lark-cli event'\` 清理（或检查是否有其他 wrapper / 调试进程残留），然后重启 hub。本次飞书通道启动跳过。`,
         );
         plugin.stoppedReason = "config";
