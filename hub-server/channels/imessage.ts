@@ -12,6 +12,7 @@
 import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import { redactSensitive } from "../config.js";
+import { ChannelHealth } from "../channel-health.js";
 import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,9 +23,6 @@ import { spawnText } from "../process-utils.js";
 const CHAT_DB = join(homedir(), "Library", "Messages", "chat.db");
 const POLL_INTERVAL_MS = 1000;
 const ECHO_WINDOW_MS = 15000;
-// 连续 MAX_CONSECUTIVE_FAILURES 次 poll 抛错 → 停 interval 避免空转淹日志。
-// 选 30 是因为 imessage 是本地 SQLite，连错 30 次（约 30s）通常是 chat.db 丢权限/损坏，retry 无意义。
-const MAX_CONSECUTIVE_FAILURES = 30;
 
 // ── Module State ────────────────────────────────────────────────────────────
 
@@ -32,7 +30,7 @@ let hub: HubAPI;
 let db: Database | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let watermark = 0;
-let consecutiveFailures = 0;
+let health: ChannelHealth;
 
 // ── Allowlist ───────────────────────────────────────────────────────────────
 
@@ -173,19 +171,21 @@ type MessageRow = {
 };
 
 async function poll(): Promise<void> {
-  // 外层 isolation：setInterval 回调里的同步/异步 throw 都不能冒到 process uncaughtException。
-  // pollInner 改 async 是因为 audio attachment 要 await hub.resolveAsr（Hub 层 ASR）。
   try {
     await pollInner();
-    consecutiveFailures = 0;
+    health.onSuccess();
   } catch (err) {
-    consecutiveFailures++;
-    hub.logError(`poll 外层异常 #${consecutiveFailures}: ${String(err)}`);
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-      hub.logError(`💀 iMessage 轮询连续失败 ${consecutiveFailures} 次，停止 (chat.db 可能丢权限或损坏)`);
-      plugin.stoppedReason = String(err).includes("SQLITE_READONLY") || String(err).includes("permission") ? "config" : "cap_reached";
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (!health.isDormant()) {
+      hub.logError(`poll 异常: ${String(err)}`);
     }
+
+    if (String(err).includes("SQLITE_READONLY") || String(err).includes("permission")) {
+      plugin.stoppedReason = "config";
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      return;
+    }
+
+    await health.onFailure();
   }
 }
 
@@ -315,6 +315,19 @@ const plugin: ChannelPlugin = {
 
   async start(hubAPI) {
     hub = hubAPI;
+
+    health = new ChannelHealth({
+      name: "imessage",
+      baseRetryMs: 1000,
+      maxRetryMs: 10_000,
+      onRestart: async () => {
+        hub.log("[imessage] 完整重启：重新打开 chat.db");
+        if (db) { db.close(); db = null; }
+        db = new Database(CHAT_DB, { readonly: true });
+        db.run("PRAGMA busy_timeout = 5000");
+      },
+      log: (msg) => hub.log(msg),
+    });
 
     // Open chat.db
     try {

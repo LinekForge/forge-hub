@@ -9,6 +9,7 @@
 import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
 import { STATE_DIR, redactSensitive } from "../config.js";
+import { ChannelHealth } from "../channel-health.js";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -36,17 +37,12 @@ const LARK_CLI = resolveLarkCli();
 let hub: HubAPI;
 let subscribeProc: ReturnType<typeof spawn> | null = null;
 let running = false;
+let health: ChannelHealth;
 
 // ── Subscription Health ────────────────────────────────────────────────────
 
-let restartCount = 0;
-let restartDelay = 5000;
 let eventCount = 0;
 let disconnectedAt = 0;
-const MAX_RESTART_DELAY = 60000;
-// lark-cli event +subscribe 一直挂 → 达到上限停止该通道。
-// 选 200：以 max 60s 间隔 ≈ 3h+ 连续失败。用户这个时间一定会发现。避免无限空转。
-const MAX_RESTART_COUNT = 200;
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
@@ -136,14 +132,8 @@ function startSubscription(): void {
     try {
       if (!line.trim()) return;
 
-      // First successful event → reset restart state
-      if (restartCount > 0 && disconnectedAt > 0) {
-        const downtime = Math.round((Date.now() - disconnectedAt) / 1000);
-        hub.log(`✅ 事件订阅恢复（断连 ${downtime}s，重启 ${restartCount} 次）`);
-        restartCount = 0;
-        restartDelay = 5000;
-        disconnectedAt = 0;
-      }
+      health.onSuccess();
+      disconnectedAt = 0;
 
       let event: unknown;
       try {
@@ -171,13 +161,9 @@ function startSubscription(): void {
       hub.logError(`[subscribe] ${msg}`);
     } else if (msg.includes("Connected") || msg.includes("reconnect")) {
       hub.log(`[subscribe] ${msg}`);
-      // lark-cli internal reconnect succeeded
       if (msg.includes("Connected") && disconnectedAt > 0) {
-        const downtime = Math.round((Date.now() - disconnectedAt) / 1000);
-        hub.log(`✅ lark-cli 内部重连成功（断连 ${downtime}s）`);
+        health.onSuccess();
         disconnectedAt = 0;
-        restartCount = 0;
-        restartDelay = 5000;
       }
     } else {
       hub.log(`[subscribe] ${msg}`);
@@ -191,32 +177,24 @@ function startSubscription(): void {
 
   proc.on("close", (code: number | null) => {
     if (!running) return;
-    restartCount++;
     if (disconnectedAt === 0) disconnectedAt = Date.now();
-    if (restartCount > MAX_RESTART_COUNT) {
-      hub.logError(`💀 飞书事件订阅重启达 ${MAX_RESTART_COUNT} 次上限，停止该通道（lark-cli 可能异常）`);
-      plugin.stoppedReason = "cap_reached";
-      running = false;
-      return;
-    }
-    hub.logError(`事件订阅进程退出 (code ${code}) · 重启 #${restartCount}，${restartDelay / 1000}s 后重连`);
-    setTimeout(startSubscription, restartDelay);
-    restartDelay = Math.min(restartDelay * 2, MAX_RESTART_DELAY);
+    hub.logError(`事件订阅进程退出 (code ${code})`);
+    health.onFailure().then(delay => {
+      if (!running) return;
+      if (health.isDormant()) return;
+      setTimeout(startSubscription, delay);
+    });
   });
 
   proc.on("error", (err: Error) => {
     if (!running) return;
-    restartCount++;
     if (disconnectedAt === 0) disconnectedAt = Date.now();
-    if (restartCount > MAX_RESTART_COUNT) {
-      hub.logError(`💀 飞书事件订阅重启达 ${MAX_RESTART_COUNT} 次上限，停止该通道`);
-      plugin.stoppedReason = "cap_reached";
-      running = false;
-      return;
-    }
-    hub.logError(`事件订阅启动失败 #${restartCount}: ${String(err)} · ${restartDelay / 1000}s 后重试`);
-    setTimeout(startSubscription, restartDelay);
-    restartDelay = Math.min(restartDelay * 2, MAX_RESTART_DELAY);
+    hub.logError(`事件订阅启动失败: ${String(err)}`);
+    health.onFailure().then(delay => {
+      if (!running) return;
+      if (health.isDormant()) return;
+      setTimeout(startSubscription, delay);
+    });
   });
 }
 
@@ -336,6 +314,17 @@ const plugin: ChannelPlugin = {
 
   async start(hubAPI) {
     hub = hubAPI;
+
+    health = new ChannelHealth({
+      name: "feishu",
+      baseRetryMs: 5000,
+      onRestart: async () => {
+        hub.log("[feishu] 完整重启：kill lark-cli → restart subscription");
+        if (subscribeProc) { subscribeProc.kill(); subscribeProc = null; }
+        startSubscription();
+      },
+      log: (msg) => hub.log(msg),
+    });
 
     // S2: detect stale lark-cli event subscribers before starting our own.
     // 飞书 app 支持最多 50 个 WebSocket listener（集群模式，事件随机投递一个

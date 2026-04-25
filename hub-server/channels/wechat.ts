@@ -12,14 +12,11 @@ import { MSG_TYPE_USER } from "./wechat-types.js";
 import { getUpdates, sendText, getConfig, sendTyping } from "./wechat-ilink.js";
 import { uploadAndSendMedia, sendTtsAsMp3File, downloadMediaItem } from "./wechat-media.js";
 import { STATE_DIR, redactSensitive } from "../config.js";
+import { ChannelHealth } from "../channel-health.js";
 import path from "node:path";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const MAX_CONSECUTIVE_FAILURES = 3;
-const FAILURE_CAP = 60;
-const BACKOFF_DELAY_MS = 30_000;
-const RETRY_DELAY_MS = 2_000;
 const TYPING_STATUS_TYPING = 1;
 const TYPING_STATUS_CANCEL = 2;
 const DEDUP_CAPACITY = 500;
@@ -33,6 +30,7 @@ let hub: HubAPI;
 let account: AccountData | null = null;
 let polling = false;
 let shouldStop = false;
+let health: ChannelHealth;
 
 const seenMessageIds = new Set<string>();
 function dedupMessage(msgId: string | undefined): boolean {
@@ -186,8 +184,6 @@ async function startPolling(): Promise<void> {
 
   const { baseUrl, token } = account;
   let syncBuf = ((hub.getState("sync") as { buf?: string })?.buf) ?? "";
-  let consecutiveFailures = 0;
-  let totalFailures = 0;
 
   hub.log("开始监听微信消息...");
 
@@ -200,11 +196,8 @@ async function startPolling(): Promise<void> {
         (resp.errcode !== undefined && resp.errcode !== 0);
 
       if (isError) {
-        consecutiveFailures++;
-        totalFailures++;
         const errMsg = resp.errmsg ?? "";
 
-        // 分类：auth 错误立刻停止——无限 retry 无益
         const classified = classifyWechatError(errMsg, resp.errcode);
         if (classified.fatal) {
           hub.logError(`💀 不可恢复错误（${classified.reason}）: ret=${resp.ret} errcode=${resp.errcode} errmsg=${errMsg}。停止微信轮询。`);
@@ -212,34 +205,22 @@ async function startPolling(): Promise<void> {
           break;
         }
 
-        hub.logError(`getupdates 失败: ret=${resp.ret} errcode=${resp.errcode} errmsg=${errMsg}`);
-
-        // Hard cap：连续失败达上限彻底放弃
-        if (totalFailures >= FAILURE_CAP) {
-          hub.logError(`💀 微信轮询累计失败 ${totalFailures} 次达上限，停止`);
-          plugin.stoppedReason = "cap_reached";
-          break;
+        if (!health.isDormant()) {
+          hub.logError(`getupdates 失败: ret=${resp.ret} errcode=${resp.errcode} errmsg=${errMsg}`);
         }
 
-        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          consecutiveFailures = 0;
-          await new Promise((r) => setTimeout(r, BACKOFF_DELAY_MS));
-        } else {
-          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-        }
+        const delay = await health.onFailure();
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
 
-      consecutiveFailures = 0;
-      totalFailures = 0;  // 成功轮询重置 hard cap
+      health.onSuccess();
 
-      // Save sync buffer
       if (resp.get_updates_buf) {
         syncBuf = resp.get_updates_buf;
         hub.setState("sync", { buf: syncBuf });
       }
 
-      // Process messages
       for (const msg of resp.msgs ?? []) {
         if (msg.message_type !== MSG_TYPE_USER) continue;
         if (dedupMessage(msg.message_id)) continue;
@@ -249,14 +230,12 @@ async function startPolling(): Promise<void> {
 
         const senderId = msg.from_user_id ?? "unknown";
 
-        // Update context token
         if (msg.context_token) {
           const tokens = (hub.getState("context-tokens") ?? {}) as Record<string, string>;
           tokens[senderId] = msg.context_token;
           hub.setState("context-tokens", tokens);
         }
 
-        // Check allowlist — 非主人拒收 + push system 告警（本阶段 allowlist 只有用户，任何非主人消息都是风险事件）
         if (!isAllowed(senderId)) {
           hub.logError(`⛔ 拒绝未授权 sender: ${senderId}, 内容前 50 字符: "${content.slice(0, 50)}"`);
           hub.pushMessage({
@@ -272,10 +251,8 @@ async function startPolling(): Promise<void> {
         const nick = getNickname(senderId);
         hub.log(`← ${nick}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
 
-        // Start typing indicator
         startTyping(senderId, msg.context_token ?? "");
 
-        // Push to Hub
         hub.pushMessage({
           channel: "wechat",
           from: nick,
@@ -283,25 +260,13 @@ async function startPolling(): Promise<void> {
           content,
           raw: { context_token: msg.context_token ?? "" },
         });
-
-        // Record chat history
-        // History recorded by Hub layer
       }
     } catch (err) {
-      consecutiveFailures++;
-      totalFailures++;
-      hub.logError(`轮询异常: ${String(err)}`);
-      if (totalFailures >= FAILURE_CAP) {
-        hub.logError(`💀 微信轮询累计异常 ${totalFailures} 次达上限，停止`);
-        plugin.stoppedReason = "cap_reached";
-        break;
+      if (!health.isDormant()) {
+        hub.logError(`轮询异常: ${String(err)}`);
       }
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        consecutiveFailures = 0;
-        await new Promise((r) => setTimeout(r, BACKOFF_DELAY_MS));
-      } else {
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-      }
+      const delay = await health.onFailure();
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 
@@ -320,22 +285,36 @@ const plugin: ChannelPlugin = {
   async start(hubAPI) {
     hub = hubAPI;
 
-    // Load credentials
     account = hub.getState("account") as AccountData | null;
     if (!account?.token || !account?.baseUrl) {
       hub.logError("未找到微信凭据。请先在 ~/.forge-hub/state/wechat/account.json 配置");
       throw new ChannelStartSkipError("未配置微信 account.json");
     }
 
-    hub.log(`账号: ${account.accountId}`);
+    health = new ChannelHealth({
+      name: "wechat",
+      onRestart: async () => {
+        hub.log("[wechat] 完整重启：stop polling → restart");
+        shouldStop = true;
+        let wait = 0;
+        while (polling && wait < 10) { await new Promise(r => setTimeout(r, 500)); wait++; }
+        startPolling();
+      },
+      log: (msg) => hub.log(msg),
+    });
 
-    // Start polling (non-blocking)
+    hub.log(`账号: ${account.accountId}`);
     startPolling();
   },
 
   async send({ to, content, type, filePath, raw }): Promise<SendResult> {
     if (!account) {
       return { success: false, error: "未登录" };
+    }
+
+    if (health?.isDormant()) {
+      const woke = await health.onOutboundRequest();
+      if (!woke) return { success: false, error: "通道恢复冷却中，稍后重试" };
     }
 
     const contextToken = (raw?.context_token as string) ?? "";

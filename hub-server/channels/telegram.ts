@@ -7,6 +7,7 @@
 
 import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
+import { ChannelHealth } from "../channel-health.js";
 import fsMod from "node:fs";
 import pathMod from "node:path";
 import { assertRealPathInsideDir, sanitizeMediaFileName } from "../media-path.js";
@@ -125,10 +126,6 @@ const POLL_TIMEOUT_S = 30;              // Telegram long-poll timeout
 const FETCH_HARD_TIMEOUT_MS = 45_000;   // Must exceed POLL_TIMEOUT_S * 1000
 const WATCHDOG_INTERVAL_MS = 60_000;    // Check liveness every 60s
 const WATCHDOG_STALL_MS = 90_000;       // 90s no success → force restart
-const INITIAL_RETRY_MS = 3000;          // First retry delay
-const MAX_RETRY_MS = 60_000;            // Retry delay cap
-const RETRY_MULTIPLIER = 2;
-const MAX_CONSECUTIVE_FAILURES = 20;    // After 20 failures, stop polling
 const HEARTBEAT_EVERY_N = 50;           // Log heartbeat every N polls (~25 min)
 
 // ── Polling State ──────────────────────────────────────────────────────────
@@ -138,12 +135,11 @@ let shouldStop = false;
 let offset = 0;
 let pollCount = 0;
 let msgCount = 0;
-let consecutiveFailures = 0;
-let retryDelay = INITIAL_RETRY_MS;
 let lastSuccessfulPollAt = 0;
 let lastError = "";
 let disconnectedAt = 0;
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let health: ChannelHealth;
 
 // ── Error Classification ───────────────────────────────────────────────────
 
@@ -198,8 +194,6 @@ function stopWatchdog(): void {
 async function startPolling(): Promise<void> {
   polling = true;
   shouldStop = false;
-  consecutiveFailures = 0;
-  retryDelay = INITIAL_RETRY_MS;
   lastSuccessfulPollAt = Date.now();
 
   hub.log("开始 Telegram 长轮询...");
@@ -214,15 +208,9 @@ async function startPolling(): Promise<void> {
       }, FETCH_HARD_TIMEOUT_MS) as any[];
 
       // ── Success ────────────────────────────────────────────
-      lastSuccessfulPollAt = Date.now(); // Only on SUCCESS — watchdog fix
-
-      if (consecutiveFailures > 0) {
-        const downtime = disconnectedAt ? Math.round((Date.now() - disconnectedAt) / 1000) : 0;
-        hub.log(`✅ 轮询恢复（断连 ${downtime}s，重试 ${consecutiveFailures} 次，最后错误: ${lastError}）`);
-        consecutiveFailures = 0;
-        retryDelay = INITIAL_RETRY_MS;
-        disconnectedAt = 0;
-      }
+      lastSuccessfulPollAt = Date.now();
+      health.onSuccess();
+      disconnectedAt = 0;
       pollCount++;
 
       if (pollCount % HEARTBEAT_EVERY_N === 0) {
@@ -291,40 +279,33 @@ async function startPolling(): Promise<void> {
       if (shouldStop) break;
 
       const classified = classifyError(err);
-      consecutiveFailures++;
       lastError = redactToken(String(err));
       if (disconnectedAt === 0) disconnectedAt = Date.now();
 
-      // Fatal: don't retry (only auth now — conflict changed to retryable)
       if (!classified.retryable) {
         hub.logError(`❌ 不可恢复错误（类型: ${classified.type}）: ${lastError}`);
         plugin.stoppedReason = classified.type === "auth" ? "auth" : "config";
         break;
       }
 
-      // Too many failures: stop
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        hub.logError(`💀 连续失败 ${consecutiveFailures} 次，停止轮询。最后错误: ${lastError}`);
-        plugin.stoppedReason = "cap_reached";
-        break;
+      // Rate limit / conflict: respect Telegram's retry_after
+      if (classified.type === "ratelimit" || classified.type === "conflict") {
+        const tgDelay = (classified.retryAfter ?? 35) * 1000;
+        if (classified.type === "conflict") {
+          hub.logError("  → 另一个 Bot 实例在轮询同一个 token，等待后重试");
+        }
+        hub.logError(`轮询异常（类型: ${classified.type}）: ${lastError}`);
+        hub.logError(`  → ${Math.round(tgDelay / 1000)}s 后重试`);
+        await new Promise((r) => setTimeout(r, tgDelay));
+        continue;
       }
 
-      // Rate limit / conflict: use Telegram's retry_after or conflict cooldown
-      const delay = (classified.type === "ratelimit" || classified.type === "conflict")
-        ? (classified.retryAfter ?? 35) * 1000
-        : retryDelay;
-
-      if (classified.type === "conflict") {
-        hub.logError("  → 另一个 Bot 实例在轮询同一个 token，等待后重试");
+      if (!health.isDormant()) {
+        hub.logError(`轮询异常（类型: ${classified.type}）: ${lastError}`);
       }
 
-      hub.logError(`轮询异常 #${consecutiveFailures}（类型: ${classified.type}）: ${lastError}`);
-      hub.logError(`  → ${Math.round(delay / 1000)}s 后重试，已断连 ${Math.round((Date.now() - disconnectedAt) / 1000)}s`);
-
+      const delay = await health.onFailure();
       await new Promise((r) => setTimeout(r, delay));
-      if (classified.type !== "ratelimit") {
-        retryDelay = Math.min(retryDelay * RETRY_MULTIPLIER, MAX_RETRY_MS);
-      }
     }
   }
 
@@ -355,12 +336,23 @@ const plugin: ChannelPlugin = {
       throw new ChannelStartSkipError("未配置 Telegram bot token");
     }
 
+    health = new ChannelHealth({
+      name: "telegram",
+      onRestart: async () => {
+        hub.log("[telegram] 完整重启：stop polling → restart");
+        shouldStop = true;
+        let wait = 0;
+        while (polling && wait < 10) { await new Promise(r => setTimeout(r, 500)); wait++; }
+        startPolling();
+      },
+      log: (msg) => hub.log(msg),
+    });
+
     try {
       const me = await tgApi("getMe");
       hub.log(`Bot: @${me.username} (${me.first_name})`);
     } catch (err) {
       hub.logError(`Bot 验证失败: ${redactToken(String(err))}。将在轮询中重试。`);
-      // Don't return — start polling anyway, it will retry with backoff
     }
 
     startPolling();
