@@ -225,13 +225,12 @@ export function setLocked(by: string): void {
   } catch (err) {
     logError(`🚨 lock.json 写失败（锁定状态 crash 不持久）: ${String(err)}`);
   }
-  // Audit 写失败是 security-critical——compliance 丢失，throw 让 caller 知道
+  // Audit：fail-closed——锁定比审计更重要，audit 写不了也要锁住
   try {
     const entry = JSON.stringify({ ts: new Date().toISOString(), action: "lock", by });
     fs.appendFileSync(AUDIT_FILE, entry + "\n", "utf-8");
   } catch (err) {
-    logError(`❌ audit.jsonl 写入失败（lock 事件未记录）: ${String(err)}`);
-    throw new Error(`audit 不可写，拒绝 lock（安全事件必须可追溯）: ${String(err)}`);
+    logError(`🚨 audit.jsonl 写入失败（lock 事件未记录，但锁定已生效）: ${String(err)}`);
   }
   log(`🔒 Hub 已锁定 (by ${by})`);
 }

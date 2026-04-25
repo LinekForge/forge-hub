@@ -32,7 +32,7 @@ Forge Hub **本机进程**（绑 `127.0.0.1`）。所有消息和凭证都在本
 
 - **Allowlist 改动需二次确认**：default `FORGE_HUB_AUTH_MODE=prompt`（终端 y/n，零依赖）；`=touchid` 启用 Touch ID（需自行装 `touchid-verify` binary）；`=none` 跳过（不推荐）。见 `fh hub allow / revoke`
 - **审批用一次性 nonce**（5 字符 `[a-km-z]`，不可猜）
-- **Lock / unlock 写 audit 失败 → 拒操作**（fail-closed：`setLocked`/`setUnlocked` 在 audit 写入失败时 throw，调用链 abort）。`fh hub allow/revoke` 也有 fail-closed：audit 写入失败时 `die()`——但 allowlist 文件在 audit 之前落盘，若 audit 失败，allowlist 改动已持久化（操作实际完成但无审计记录，CLI 返错让用户警觉。完整原子性需 v0.3 WAL/rollback）。其他路径（`/permission-request` 审批事件等）audit 失败仅 logError，不阻塞主流程
+- **Lock audit 失败 → fail-closed 锁定**：`setLocked` 先写锁状态再写 audit；audit 写不了也锁住（锁定比审计更重要），但 logError 告警。`setUnlocked` 相反：先写 audit 再解锁；audit 写失败时 throw，保持锁定（解锁必须可追溯）。`fh hub allow/revoke` 也有 fail-closed：audit 写入失败时 `die()`——但 allowlist 文件在 audit 之前落盘，若 audit 失败，allowlist 改动已持久化（操作实际完成但无审计记录，CLI 返错让用户警觉。完整原子性需 v0.3 WAL/rollback）。其他路径（`/permission-request` 审批事件等）audit 失败仅 logError，不阻塞主流程
 - **Lock-phrase（panic button）**—— 任何通道收到完全匹配暗号 → hub 立即冻结
 
 ## 升级 / Patch

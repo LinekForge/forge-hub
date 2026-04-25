@@ -334,17 +334,20 @@ export default function App() {
   }, [ais, pendingApprovals, nativeMode, hubToSessionMap]);
 
   const approvalQueue = useMemo(() =>
-    pendingApprovals.map(a => ({
-      id: a.request_id,
-      ai: a.from_instance,
-      tool: a.tool_name,
-      intent: a.description,
-      command: a.tool_name,
-      risk: 'unknown' as const,
-      requestedAt: `${Math.floor(a.waited_seconds / 60)} 分钟前`,
-      time: `${Math.floor(a.waited_seconds / 60)}m`,
-    })),
-  [pendingApprovals]);
+    pendingApprovals.map(a => {
+      const aiId = nativeMode ? (hubToSessionMap[a.from_instance] ?? a.from_instance) : a.from_instance;
+      return {
+        id: a.request_id,
+        ai: aiId,
+        tool: a.tool_name,
+        intent: a.description,
+        command: a.tool_name,
+        risk: 'unknown' as const,
+        requestedAt: `${Math.floor(a.waited_seconds / 60)} 分钟前`,
+        time: `${Math.floor(a.waited_seconds / 60)}m`,
+      };
+    }),
+  [pendingApprovals, nativeMode, hubToSessionMap]);
 
   const systemInfo = useMemo<DashboardSystemInfo>(() => {
     if (!hubInfo) return SYSTEM_DEFAULT;

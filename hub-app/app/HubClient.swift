@@ -127,10 +127,15 @@ class HubClient {
                             if let desc = inst["description"] as? String, !desc.isEmpty {
                                 scanner.hubDescs[key] = desc
                             }
-                            if let channels = inst["channels"] as? [String], !channels.isEmpty,
-                               let fullSid = pidToFullSid[pidStr] {
-                                scanner.hubChannelSIDs.insert(fullSid)
-                                scanner.hubChannelsBySID[fullSid] = channels
+                            if let fullSid = pidToFullSid[pidStr] {
+                                let isChannel = inst["isChannel"] as? Bool ?? false
+                                if let channels = inst["channels"] as? [String], !channels.isEmpty {
+                                    scanner.hubChannelSIDs.insert(fullSid)
+                                    scanner.hubChannelsBySID[fullSid] = channels
+                                } else if isChannel {
+                                    scanner.hubChannelSIDs.insert(fullSid)
+                                    scanner.hubChannelsBySID[fullSid] = ["all"]
+                                }
                             }
                         }
                     }
