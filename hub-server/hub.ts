@@ -582,8 +582,7 @@ async function main() {
       // 全局开关：auto_replay_on_ready=false 时不推自动历史，pull-model（instance 用 hub_replay_history 工具自己拉）
       // default true 保持兼容。想开"纯净测试窗口"就在 hub-config.json 里设 false。
       const autoReplay = getCurrentConfig().auto_replay_on_ready !== false;
-      // 每通道条数上限——default 10 轻量化（之前硬编码 100 对 CC context 太重）
-      const replayCount = getCurrentConfig().auto_replay_count ?? 10;
+      const replayCount = getCurrentConfig().auto_replay_count ?? 5;
 
       // Determine which channels to replay history for
       // If historyConfig present: use it (keys = channels to replay, values = counts)

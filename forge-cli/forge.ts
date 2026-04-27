@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+if (!process.env.NO_PROXY) process.env.NO_PROXY = "127.0.0.1,localhost";
 /**
  * forge CLI — Forge 系统管理工具
  *

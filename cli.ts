@@ -266,6 +266,14 @@ function installCmd(): void {
 可选：
   • 启用远程审批 hook → README.md §启用远程审批
   • Touch ID 二次确认：export FORGE_HUB_AUTH_MODE=touchid（需自行装 touchid-verify）
+  • 搭配 forge-launcher 使用可精细控制每通道历史回放条数
+
+💡 如果你使用系统代理（Clash / V2Ray 等），Hub 已自动跳过本地请求代理。
+   若仍遇到 502，请确认 NO_PROXY 包含 127.0.0.1,localhost。
+
+💡 如果启用了远程审批 hook，建议检查 ~/.claude/settings.local.json
+   确保 Write / Edit / Bash 等常用工具在 permissions.allow 白名单内，
+   避免日常操作也触发远程审批。
 `);
 }
 

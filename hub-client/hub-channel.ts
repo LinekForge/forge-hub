@@ -6,6 +6,8 @@
  * 一个 channel 搞定所有通道。
  */
 
+if (!process.env.NO_PROXY) process.env.NO_PROXY = "127.0.0.1,localhost";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
