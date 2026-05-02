@@ -17,7 +17,14 @@
  *      参考 examples/channel-bridge.plist 的 launchd 示例
  *
  * 依赖：Bun >= 1.0，Hub Server 运行在 localhost:9900（或通过 HUB_URL 环境变量覆盖）
+ * 认证：若 Hub 配置了 HUB_API_TOKEN，通过环境变量或 ~/.forge-hub/api-token 文件传入
  */
+
+// 防止系统代理拦截 localhost 请求（参考 hub-channel.ts 的同名处理）
+if (!process.env.NO_PROXY) process.env.NO_PROXY = "127.0.0.1,localhost";
+
+import fs from "node:fs";
+import path from "node:path";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -51,12 +58,34 @@ const CONFIG = {
  *   iMessage：手机号或邮箱
  */
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+/** 读取 Hub API Token（优先 env，其次 ~/.forge-hub/api-token 文件） */
+function readAuthToken(): string {
+  if (process.env.HUB_API_TOKEN) return process.env.HUB_API_TOKEN;
+  try {
+    const tokenFile = path.join(process.env.HOME ?? "~", ".forge-hub", "api-token");
+    if (fs.existsSync(tokenFile)) return fs.readFileSync(tokenFile, "utf-8").trim();
+  } catch { /* ignore */ }
+  return "";
+}
+
+const AUTH_TOKEN = readAuthToken();
+
+function authHeaders(): Record<string, string> {
+  return AUTH_TOKEN ? { "Authorization": `Bearer ${AUTH_TOKEN}` } : {};
+}
+
 // ── Internal ─────────────────────────────────────────────────────────────────
 
 const WS_URL = CONFIG.hubUrl.replace(/^http/, "ws") + "/ws";
 const SEND_URL = CONFIG.hubUrl + "/send";
 const INSTANCE_ID = "channel-bridge";
-const RECONNECT_DELAY_MS = 5_000;
+
+// 指数退避参数：5s → 10s → 20s → … → cap 60s，连上后重置
+const BACKOFF_INITIAL_MS = 5_000;
+const BACKOFF_MAX_MS = 60_000;
+let reconnectDelay = BACKOFF_INITIAL_MS;
 
 function log(msg: string) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -65,7 +94,7 @@ function log(msg: string) {
 async function sendMessage(channel: string, to: string, text: string) {
   const res = await fetch(SEND_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ channel, to, text }),
   });
   const body = await res.json() as { success: boolean; error?: string; warning?: string };
@@ -78,9 +107,14 @@ async function sendMessage(channel: string, to: string, text: string) {
 }
 
 function connect() {
-  const ws = new WebSocket(`${WS_URL}?instance=${INSTANCE_ID}`);
+  const wsUrl = AUTH_TOKEN
+    ? `${WS_URL}?instance=${INSTANCE_ID}&token=${AUTH_TOKEN}`
+    : `${WS_URL}?instance=${INSTANCE_ID}`;
+
+  const ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
+    reconnectDelay = BACKOFF_INITIAL_MS; // 连上后重置退避
     log("已连接到 Hub");
     ws.send(JSON.stringify({ type: "ready", tag: INSTANCE_ID }));
     log(`监听 [${CONFIG.a.channel}] sender=${CONFIG.a.senderId}`);
@@ -122,8 +156,11 @@ function connect() {
   };
 
   ws.onclose = () => {
-    log(`连接断开，${RECONNECT_DELAY_MS / 1000} 秒后重连…`);
-    setTimeout(connect, RECONNECT_DELAY_MS);
+    log(`连接断开，${reconnectDelay / 1000}s 后重连…`);
+    setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 2, BACKOFF_MAX_MS);
+      connect();
+    }, reconnectDelay);
   };
 }
 
