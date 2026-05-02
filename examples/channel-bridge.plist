@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Channel Bridge · launchd 后台服务配置（macOS）
+
+  使用方式：
+    1. 修改 ProgramArguments 里的脚本路径
+    2. 复制到 ~/Library/LaunchAgents/com.forge.channel-bridge.plist
+    3. 加载：launchctl load ~/Library/LaunchAgents/com.forge.channel-bridge.plist
+    4. 启动：launchctl start com.forge.channel-bridge
+
+  日志查看：tail -f /tmp/channel-bridge.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.forge.channel-bridge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <!-- 修改为你的实际脚本路径 -->
+    <string>/path/to/channel-bridge.ts</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/channel-bridge.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/channel-bridge.log</string>
+</dict>
+</plist>
