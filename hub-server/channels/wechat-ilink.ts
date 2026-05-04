@@ -152,7 +152,7 @@ export async function sendText(
   const chunks = chunkText(text);
   for (let i = 0; i < chunks.length; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 300));
-    await apiFetch({
+    const result = await apiFetch({
       baseUrl,
       endpoint: "ilink/bot/sendmessage",
       body: JSON.stringify({
@@ -170,6 +170,12 @@ export async function sendText(
       token,
       timeoutMs: 15_000,
     });
+    const resp = JSON.parse(result.text) as { ret?: number; errcode?: number; errmsg?: string };
+    const hasError = (resp.ret !== undefined && resp.ret !== 0)
+      || (resp.errcode !== undefined && resp.errcode !== 0);
+    if (hasError) {
+      throw new Error(`sendmessage 失败: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg ?? ""}`);
+    }
   }
 }
 

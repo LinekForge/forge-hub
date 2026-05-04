@@ -447,6 +447,12 @@ function scheduleMidnight(server: Server): void {
 export async function startScheduler(server: Server): Promise<void> {
   ensureDirs();
   initDefaultConfig();
+
+  const cfg = loadForgeConfig();
+  if (Object.keys(cfg.contacts).length === 0) {
+    logError("⚠️  engine-config.json 的 contacts 为空——任务通知将缺少 sender_id，请编辑 contacts 字段添加联系人");
+  }
+
   handlers = await scanHandlers();
   fullReload(server);
   scheduleMidnight(server);
