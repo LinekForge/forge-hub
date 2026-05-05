@@ -625,6 +625,12 @@ mcpServer.setNotificationHandler(PermissionRequestNotification, async ({ params 
         const parsed = JSON.parse(body);
         if (parsed.error) reason = `${reason}: ${String(parsed.error).slice(0, 300)}`;
       } catch { /* body not JSON, use status only */ }
+
+      if (res.status === 503) {
+        log(`permission_request ${params.request_id} 退让：Hub 无法推送审批（${reason}），由本地弹窗接管`);
+        return;
+      }
+
       logError(`permission_request ${reason} (req=${params.request_id})`);
       await autoDenyPermission(params.request_id, reason);
       return;
