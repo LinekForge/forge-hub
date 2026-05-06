@@ -173,6 +173,10 @@ export interface HubAPI {
    * 一个 audio 路径占位（`[语音] ${path}`），让 agent 决策要不要回"能文字告诉我吗"。
    */
   resolveAsr(audioPath: string): Promise<string | null>;
+  /** 检查 sender 是否在本通道的 allowlist 中 */
+  isAllowed(senderId: string): boolean;
+  /** 获取 sender 的昵称（不在 allowlist 中则返回 id 截取） */
+  getNickname(senderId: string): string;
 }
 
 // ── 通道 Allowlist（所有通道共享 schema） ──────────────────────────────────

@@ -19,6 +19,7 @@ import { getInstances } from "./instance-manager.js";
 import { loadChannelState, readAllowlist, saveChannelState } from "./state.js";
 import { channelPlugins } from "./channel-registry.js";
 import { isAuthorizedSenderMatch } from "./message-auth.js";
+import { pruneRateLimitMap } from "./rate-limit.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -151,11 +152,9 @@ export function startPendingTtlSweep(): void {
   setInterval(() => {
     try {
       const now = Date.now();
+      let changed = false;
       for (const [id, p] of pendingPermissions) {
         if (now - p.created_at > PERMISSION_TTL_MS) {
-          // 必须通知 client：否则 client 的 MCP permission handler 无限挂起，Claude Code 卡死。
-          // 这是 04-13 发现的 bug——原版只 delete map 不通知，client 永远等不到 response。
-          // 发 behavior="deny" 让 CC 侧走现成的 deny 分支停下 tool call。
           const delivery = sendPendingApprovalResponse(id, p, "deny", {
             channel: "system",
             from: "hub",
@@ -166,8 +165,6 @@ export function startPendingTtlSweep(): void {
           } else if (delivery.reason === "offline") {
             log(`⏰ 审批请求 ${id} 超时清理 (tool=${p.tool_name}, instance=${p.from_instance} 已离线,无需通知)`);
           } else {
-            // 实例还在线但发送没有被确认，不能删 pending；下一轮 sweep 再尝试，
-            // 否则 MCP permission handler 会继续挂起且用户无法重试。
             logError(`审批 ${id} 超时 auto-deny 未送达 ${p.from_instance} (${delivery.reason})，pending 保持等待`);
             continue;
           }
@@ -180,11 +177,8 @@ export function startPendingTtlSweep(): void {
             instance_online: Boolean(getInstances().get(p.from_instance)),
             waited_ms: Date.now() - p.created_at,
           });
-          // 回 ack 给用户：告诉他这个 pending 自动 deny 了。
-          // 发到第一个成功推送过的通道（pushed_channels[0]）——那是他能看到原始审批的地方。
           const ackChannel = p.pushed_channels[0];
           if (ackChannel) {
-            // fire-and-forget，不阻塞清理循环
             void (async () => {
               const to = await resolveApprovalRecipient(ackChannel);
               if (to) {
@@ -196,15 +190,16 @@ export function startPendingTtlSweep(): void {
               }
             })();
           }
-          // 同步清理 idLookup，避免孤儿 display id 占位
           idLookup.delete(p.yes_id);
           idLookup.delete(p.no_id);
           pendingPermissions.delete(id);
-          savePendingToDisk();
+          changed = true;
         }
       }
+      if (changed) savePendingToDisk();
+
+      pruneRateLimitMap();
     } catch (err) {
-      // 防御性兜底：裸 throw 会冒到 uncaughtException 导致整个 hub crash
       logError(`pendingPermissions 清理循环异常: ${String(err)}`);
     }
   }, 60_000);

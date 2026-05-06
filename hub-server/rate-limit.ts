@@ -9,19 +9,26 @@
 
 export const RATE_LIMIT_WINDOW_MS = 60_000;
 export const RATE_LIMIT_MAX = 20;
-const permissionRequestRate = new Map<string, number[]>();  // instance → [timestamp...]
+const permissionRequestRate = new Map<string, number[]>();
 
-/** 检查某 instance 是否超过速率限制。返回 true = 放行，false = 拒绝。 */
 export function checkPermissionRate(instanceId: string): boolean {
   const now = Date.now();
   const window = permissionRequestRate.get(instanceId) ?? [];
-  // 保留窗口内的时间戳
   const fresh = window.filter((ts) => now - ts < RATE_LIMIT_WINDOW_MS);
   if (fresh.length >= RATE_LIMIT_MAX) {
-    permissionRequestRate.set(instanceId, fresh);  // 即使拒绝也清理旧的
+    permissionRequestRate.set(instanceId, fresh);
     return false;
   }
   fresh.push(now);
   permissionRequestRate.set(instanceId, fresh);
   return true;
+}
+
+export function pruneRateLimitMap(): void {
+  const now = Date.now();
+  for (const [id, timestamps] of permissionRequestRate) {
+    if (timestamps.every((ts) => now - ts >= RATE_LIMIT_WINDOW_MS)) {
+      permissionRequestRate.delete(id);
+    }
+  }
 }

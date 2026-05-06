@@ -9,7 +9,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 
 import { CHANNELS_DIR, log, logError, channelLog, channelLogError, formatUnauthorizedNotice as _formatUnauthorizedNotice } from "./config.js";
-import { loadChannelState, saveChannelState } from "./state.js";
+import { loadChannelState, saveChannelState, isAllowedSender, getNickname as _getNickname } from "./state.js";
 import { ChannelStartSkipError } from "./types.js";
 import type { ChannelPlugin, HubAPI, InboundMessage } from "./types.js";
 import { populate as populateRegistry, type ChannelMetaEntry, type ChannelSendEntry } from "./channel-registry.js";
@@ -58,9 +58,14 @@ function createHubAPI(channelName: string, onMessage: (msg: InboundMessage) => v
       return _formatUnauthorizedNotice(channelName, displayName, senderId, rawContent);
     },
     async resolveAsr(audioPath: string): Promise<string | null> {
-      // 动态 import 防 channel-loader 和 asr.ts 的循环依赖（asr.ts 依赖 channel-registry.ts 的 channelPlugins）
       const { resolveAsr } = await import("./asr.js");
       return resolveAsr(channelName, audioPath);
+    },
+    isAllowed(senderId: string): boolean {
+      return isAllowedSender(channelName, senderId);
+    },
+    getNickname(senderId: string): string {
+      return _getNickname(channelName, senderId);
     },
   };
 }

@@ -50,19 +50,12 @@ function stripAnsi(s: string): string {
 
 // ── Allowlist ───────────────────────────────────────────────────────────────
 
-import type { Allowlist } from "../types.js";  // 统一 schema，详见 types.ts::Allowlist
-
-function getAllowlist(): Allowlist {
-  return (hub.getState("allowlist") ?? { allowed: [], auto_allow_next: false }) as Allowlist;
-}
-
 function isAllowed(userId: string): boolean {
-  return getAllowlist().allowed.some((e) => e.id === userId);
+  return hub.isAllowed(userId);
 }
 
 function getNickname(userId: string): string {
-  const entry = getAllowlist().allowed.find((e) => e.id === userId);
-  return entry?.nickname ?? userId;
+  return hub.getNickname(userId);
 }
 
 // ── Chat History ────────────────────────────────────────────────────────────

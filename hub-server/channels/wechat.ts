@@ -7,7 +7,7 @@
 
 import { ChannelStartSkipError } from "../types.js";
 import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
-import type { AccountData, Allowlist, WeixinMessage } from "./wechat-types.js";
+import type { AccountData, WeixinMessage } from "./wechat-types.js";
 import { MSG_TYPE_USER } from "./wechat-types.js";
 import { getUpdates, sendText, getConfig, sendTyping } from "./wechat-ilink.js";
 import { uploadAndSendMedia, sendTtsAsMp3File, downloadMediaItem } from "./wechat-media.js";
@@ -109,14 +109,11 @@ async function handleTypingBeforeSend(senderId: string, contextToken: string): P
 // ── Allowlist ───────────────────────────────────────────────────────────────
 
 function isAllowed(senderId: string): boolean {
-  const allowlist = (hub.getState("allowlist") ?? { allowed: [], auto_allow_next: false }) as Allowlist;
-  return allowlist.allowed.some((e) => e.id === senderId);
+  return hub.isAllowed(senderId);
 }
 
 function getNickname(senderId: string): string {
-  const allowlist = (hub.getState("allowlist") ?? { allowed: [] }) as Allowlist;
-  const entry = allowlist.allowed.find((e) => e.id === senderId);
-  return entry?.nickname ?? senderId.split("@")[0];
+  return hub.getNickname(senderId);
 }
 
 // ── Content Extraction ──────────────────────────────────────────────────────

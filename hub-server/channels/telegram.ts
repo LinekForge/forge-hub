@@ -86,14 +86,8 @@ async function tgApiPolling(body: Record<string, unknown>, timeoutMs: number): P
 
 // ── Allowlist ───────────────────────────────────────────────────────────────
 
-import type { Allowlist } from "../types.js";  // 统一 schema，详见 types.ts::Allowlist
-
-function getAllowlist(): Allowlist {
-  return (hub.getState("allowlist") ?? { allowed: [], auto_allow_next: false }) as Allowlist;
-}
-
 function isAllowed(chatId: string): boolean {
-  return getAllowlist().allowed.some((e) => e.id === chatId);
+  return hub.isAllowed(chatId);
 }
 
 // ── Media Download ──────────────────────────────────────────────────────────

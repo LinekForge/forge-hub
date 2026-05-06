@@ -34,19 +34,12 @@ let health: ChannelHealth;
 
 // ── Allowlist ───────────────────────────────────────────────────────────────
 
-import type { Allowlist } from "../types.js";  // 统一 schema，详见 types.ts::Allowlist
-
-function getAllowlist(): Allowlist {
-  return (hub.getState("allowlist") ?? { allowed: [], auto_allow_next: false }) as Allowlist;
-}
-
 function isAllowed(handleId: string): boolean {
-  return getAllowlist().allowed.some((e) => e.id.toLowerCase() === handleId.toLowerCase());
+  return hub.isAllowed(handleId);
 }
 
 function getNickname(handleId: string): string {
-  const entry = getAllowlist().allowed.find((e) => e.id.toLowerCase() === handleId.toLowerCase());
-  return entry?.nickname ?? handleId;
+  return hub.getNickname(handleId);
 }
 
 // ── Self Address Detection ──────────────────────────────────────────────────
