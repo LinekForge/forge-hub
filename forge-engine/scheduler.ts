@@ -283,11 +283,14 @@ function updateState(sender: string): void {
 
 // ── Schedule ────────────────────────────────────────────────────────────────
 
+const MISSED_WINDOW_MS = 2 * 60 * 60 * 1000;
+
 function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server): number {
   const now = Date.now();
   const today = dateStr();
   const timers: ReturnType<typeof setTimeout>[] = [];
   let count = 0;
+  const missed: { label: string; time: string }[] = [];
 
   for (const entry of entries) {
     if (!canScheduleToday(entry, today)) continue;
@@ -298,7 +301,26 @@ function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server
     if (delay > 0) {
       timers.push(setTimeout(() => fire(entry, server), delay));
       count++;
+    } else if (delay > -MISSED_WINDOW_MS && !entry.one_shot) {
+      missed.push({
+        label: entry.label ?? entry.sender,
+        time: timeStr(entry.hour, entry.minute),
+      });
     }
+  }
+
+  if (missed.length > 0) {
+    const list = missed.map(m => `- ${m.time} ${m.label}`).join("\n");
+    log(`⏰ 发现 ${missed.length} 个错过的任务（2h 内），通知用户`);
+    setTimeout(() => {
+      server.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: `[错过的任务] 以下今日任务在启动前已错过：\n${list}\n\n如需补跑请告诉我。`,
+          meta: { sender: "engine", sender_id: getPrimarySenderId(currentConfig.contacts) },
+        },
+      }).catch(err => logError(`错过任务通知发送失败: ${String(err)}`));
+    }, 3000);
   }
 
   timersByOrigin.set(origin, timers);
