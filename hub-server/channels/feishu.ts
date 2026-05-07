@@ -199,8 +199,8 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
 
   if (!senderId || !chatId) return;
 
-  // Check allowlist — 私聊按 sender_id 授权；群聊必须显式授权 chat_id，避免个人授权被带进群。
-  const isGroupMessage = chatId.startsWith("oc_");
+  const chatType = (event.chat_type ?? "") as string;
+  const isGroupMessage = chatType === "group";
   const isAuthorizedGroup = isGroupMessage && hub.isAllowed(chatId);
   const isAuthorizedDirect = !isGroupMessage && hub.isAllowed(senderId);
   if (!isAuthorizedDirect && !isAuthorizedGroup) {
