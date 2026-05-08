@@ -410,8 +410,14 @@ const plugin: ChannelPlugin = {
 
   async stop() {
     running = false;
-    if (subscribeProc) {
-      subscribeProc.kill("SIGTERM");
+    const proc = subscribeProc;
+    subscribeProc = null;
+    if (proc) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => { proc.kill("SIGKILL"); resolve(); }, 3000);
+        proc.once("close", () => { clearTimeout(timer); resolve(); });
+        proc.kill("SIGTERM");
+      });
       hub.log("飞书事件订阅已停止");
     }
   },
