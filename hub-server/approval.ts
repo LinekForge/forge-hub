@@ -147,13 +147,36 @@ export function loadPendingFromDisk(): void {
 
 // ── TTL Sweep ───────────────────────────────────────────────────────────────
 
-/** 启动定时 sweep，每 60s 扫一次 pending 过期清理 + 通知 instance + ack 用户 */
+const REMINDER_AFTER_MS = 30 * 60 * 1000;
+
+/** 启动定时 sweep，每 60s 扫一次：30 分钟提醒 + 240 分钟超时清理 */
 export function startPendingTtlSweep(): void {
   setInterval(() => {
     try {
       const now = Date.now();
       let changed = false;
       for (const [id, p] of pendingPermissions) {
+        // 30 分钟提醒（只发一次）
+        if (!p.reminded_at && now - p.created_at > REMINDER_AFTER_MS && now - p.created_at <= PERMISSION_TTL_MS) {
+          p.reminded_at = now;
+          const ackChannel = p.pushed_channels[0];
+          if (ackChannel) {
+            void (async () => {
+              const to = await resolveApprovalRecipient(ackChannel);
+              if (to) {
+                const waited = Math.round((now - p.created_at) / 60_000);
+                await sendApprovalAck(
+                  ackChannel,
+                  to,
+                  `⏳ 审批提醒（已等 ${waited} 分钟）\n${p.tool_name}: ${p.description}\nyes ${p.yes_id} / no ${p.no_id}\n\n如已在终端确认，请忽略。`,
+                );
+              }
+            })();
+          }
+          log(`⏳ 审批提醒 ${id} (tool=${p.tool_name}, 已等 ${Math.round((now - p.created_at) / 60_000)}min)`);
+          changed = true;
+        }
+
         if (now - p.created_at > PERMISSION_TTL_MS) {
           const delivery = sendPendingApprovalResponse(id, p, "deny", {
             channel: "system",

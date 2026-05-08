@@ -648,6 +648,7 @@ export function startServer(config: HubConfig): void {
           ];
           if (body.input_preview) promptLines.push("", body.input_preview.slice(0, 200));
           promptLines.push("", "Allow?", `Reply "yes ${yes_id}" to approve`, `Reply "no ${no_id}" to deny`);
+          promptLines.push("", "⏳ 终端和微信均可审批，先操作的生效。终端处理后微信侧无法感知，仍会有提醒。如已在终端确认，请忽略本消息及后续提醒。");
           const prompt = promptLines.join("\n");
 
           // 7. 推送到 approval_channels——支持两种模式

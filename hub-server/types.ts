@@ -315,6 +315,8 @@ export interface PendingPermission {
   created_at: number;
   /** 实际成功推送的通道名列表（调试/日志用） */
   pushed_channels: string[];
+  /** ms epoch，30 分钟提醒已发送的时间戳。未提醒时为 undefined */
+  reminded_at?: number;
 }
 
 // ── 实例连接 ────────────────────────────────────────────────────────────────
