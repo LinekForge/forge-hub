@@ -282,6 +282,53 @@ function installCmd(): void {
 `);
 }
 
+// ── sync ────────────────────────────────────────────────────────────────────
+
+function syncCmd(): void {
+  log("🔄 Forge Hub sync\n");
+
+  // 1. Re-stage package snapshot from current source
+  const packageRoot = stagePackageRuntime();
+  const serverSrc = path.join(packageRoot, "hub-server");
+
+  // 2. Copy hub-server .ts/.json/.lock files to runtime
+  cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"]);
+  cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
+
+  // Security: maintain 700 permissions
+  try {
+    fs.chmodSync(HUB_DIR, 0o700);
+    fs.chmodSync(CHANNELS_RUNTIME, 0o700);
+  } catch (err) {
+    console.warn(`⚠️  chmod 700 失败: ${String(err)}`);
+  }
+  log("✓ hub-server runtime synced（channels/ 已更新）");
+
+  // 3. Restart hub via launchctl
+  if (os.platform() === "darwin") {
+    const uid = os.userInfo().uid;
+    const label = `gui/${uid}/com.forge-hub`;
+    try {
+      // kickstart -k: forcibly restart by plist path
+      execFileSync("launchctl", ["kickstart", "-k", "-p", LAUNCHD_PLIST], { stdio: "ignore" });
+      log("✓ Hub 已重启");
+    } catch {
+      // Fallback: bootout + bootstrap if kickstart by path fails
+      try {
+        execFileSync("launchctl", ["bootout", label], { stdio: "ignore" });
+      } catch { /* might not be bootstrapped */ }
+      try {
+        execFileSync("launchctl", ["bootstrap", label, LAUNCHD_PLIST], { stdio: "ignore" });
+        log("✓ Hub 已重启");
+      } catch {
+        log(`⚠️  无法重启 Hub。手动执行：launchctl bootout ${label} && launchctl bootstrap ${label} ${LAUNCHD_PLIST}`);
+      }
+    }
+  }
+
+  log("\n✅ Sync 完成。hub-server 运行时已对齐源码。");
+}
+
 // ── uninstall ───────────────────────────────────────────────────────────────
 
 function uninstallCmd(): void {
@@ -680,6 +727,9 @@ if (import.meta.main) {
     case "install":
       installCmd();
       break;
+    case "sync":
+      syncCmd();
+      break;
     case "uninstall":
       uninstallCmd();
       break;
@@ -696,6 +746,7 @@ USAGE:
 
 COMMANDS:
   install      一键部署到 ~/.forge-hub/ + ~/.claude/channels/hub/ + launchd + MCP 注册
+  sync         仅同步 hub-server 运行时文件（git pull 后跑这个，不重装 deps/dashboard）
   uninstall    反向操作（保留 state）
   doctor       诊断 install 状态 + connectivity
   --help       显示此帮助
