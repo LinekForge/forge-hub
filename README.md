@@ -256,7 +256,7 @@ forge-hub install / uninstall / doctor
 - [@lightallspiritthing](https://github.com/lightallspiritthing) — 飞书 P2P 单聊修复（[#1](https://github.com/LinekForge/forge-hub/pull/1)）· Homebrew Formula（[#2](https://github.com/LinekForge/forge-hub/pull/2)）· iLink sendText 静默丢消息（[#16](https://github.com/LinekForge/forge-hub/issues/16)）
 - [@wangviola7](https://github.com/wangviola7) — 飞书群消息 auth / reply routing / i18n regex（[#3](https://github.com/LinekForge/forge-hub/pull/3)）· Issue 反馈（[#10](https://github.com/LinekForge/forge-hub/issues/10) [#11](https://github.com/LinekForge/forge-hub/issues/11) [#12](https://github.com/LinekForge/forge-hub/issues/12) [#13](https://github.com/LinekForge/forge-hub/issues/13)）
 - [@jamiekya](https://github.com/jamiekya) — 跨通道消息桥 examples/channel-bridge（[#15](https://github.com/LinekForge/forge-hub/pull/15)）
-- [@AmberCXX](https://github.com/AmberCXX) — engine contacts 初始化提示（[#17](https://github.com/LinekForge/forge-hub/issues/17)）· engine 错过任务恢复（[#19](https://github.com/LinekForge/forge-hub/issues/19)）
+- [@AmberCXX](https://github.com/AmberCXX) — engine contacts 初始化提示（[#17](https://github.com/LinekForge/forge-hub/issues/17)）· engine 错过任务恢复（[#19](https://github.com/LinekForge/forge-hub/issues/19)）· 飞书 allowlist 私聊误判（[#21](https://github.com/LinekForge/forge-hub/issues/21)）· feishu replyTo 修复（[#23](https://github.com/LinekForge/forge-hub/pull/23)）· feishu stop await（[#24](https://github.com/LinekForge/forge-hub/pull/24)）· pending 提醒建议（[#22](https://github.com/LinekForge/forge-hub/issues/22)）· forge-hub sync（[#25](https://github.com/LinekForge/forge-hub/pull/25)）
 - [@NorveraFlorent](https://github.com/NorveraFlorent) — 消息注入与权限弹窗冲突分析（[#18](https://github.com/LinekForge/forge-hub/issues/18)）
 
 ## 致谢与免责
