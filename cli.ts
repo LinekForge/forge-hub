@@ -293,6 +293,7 @@ function syncCmd(): void {
 
   // 2. Copy hub-server .ts/.json/.lock files to runtime
   cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"]);
+  cleanDirContents(CHANNELS_RUNTIME);
   cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
 
   // Security: maintain 700 permissions
