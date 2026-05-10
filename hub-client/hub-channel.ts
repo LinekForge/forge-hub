@@ -852,18 +852,21 @@ async function main() {
 }
 
 // ── Graceful Exit ────────────────────────────────────────────────────────────
-// MCP 协议：client 关 stdin = 会话结束。SDK 的 StdioServerTransport 不监听
-// stdin end，需要 server 自己处理。不处理会导致孤儿进程。
+// CC 关窗口时直接发 SIGINT → 100ms → SIGTERM → 400ms → SIGKILL，不关 stdin。
+// 总共只有约 500ms 做清理。日志用同步写确保落盘，mcpServer.close() 尽力而为。
 
-async function gracefulExit(): Promise<void> {
-  log("收到退出信号，关闭 MCP server...");
-  try { await mcpServer.close(); } catch {}
-  process.exit(0);
+let exiting = false;
+function gracefulExit(signal: string): void {
+  if (exiting) return;
+  exiting = true;
+  log(`收到退出信号 (${signal})，关闭 MCP server...`);
+  mcpServer.close().catch(() => {}).finally(() => process.exit(0));
+  setTimeout(() => process.exit(0), 200);
 }
 
-process.stdin.on("end", gracefulExit);
-process.on("SIGINT", gracefulExit);
-process.on("SIGTERM", gracefulExit);
+process.stdin.on("end", () => gracefulExit("stdin-end"));
+process.on("SIGINT", () => gracefulExit("SIGINT"));
+process.on("SIGTERM", () => gracefulExit("SIGTERM"));
 
 main().catch((err) => {
   logError(`Fatal: ${String(err)}`);
