@@ -819,27 +819,35 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
+function startChannelMode(label: string): void {
+  void connectWithRetry();
+  log(`Hub Client 已启动 ✦ WebSocket channel 模式${label} (instance: ${INSTANCE_ID})`);
+}
+
+async function startToolMode(config: SessionConfig | null, label: string): Promise<void> {
+  persistToolIdentity(config);
+  const hubReady = await ensureHubRunning();
+  if (!hubReady) log("⚠ Hub 未就绪，工具调用会失败。请启动 Hub 或使用直连模式。");
+  log(`Hub Client 已启动 · 工具模式（${label}）`);
+}
+
 async function main() {
   await mcpServer.connect(new StdioServerTransport());
   log("MCP 连接就绪");
 
-  // Channel mode = has channels subscription. Tool mode = no channels (even if has description)
-  const isChannel = isChannelMode(SESSION_CONFIG);
-
-  // Tool mode: persist identity so Hub/Dashboard can show this instance as "仅工具"
-  if (!isChannel) {
-    persistToolIdentity(SESSION_CONFIG);
-  }
-
-  if (isChannel) {
-    void connectWithRetry();
-    log(`Hub Client 已启动 ✦ WebSocket channel 模式 (instance: ${INSTANCE_ID})`);
-  } else {
-    const hubReady = await ensureHubRunning();
-    if (!hubReady) {
-      log("⚠ Hub 未就绪，工具调用会失败。请启动 Hub 或使用直连模式。");
+  if (SESSION_CONFIG !== null) {
+    if (isChannelMode(SESSION_CONFIG)) {
+      startChannelMode("");
+    } else {
+      await startToolMode(SESSION_CONFIG, "不注册 peer");
     }
-    log(`Hub Client 已启动 · 工具模式（不注册 peer）`);
+  } else {
+    log("无 session config，检测 CC channel handler...");
+    if (await waitForChannelHandlerReady(10_000)) {
+      startChannelMode("（自动检测）");
+    } else {
+      await startToolMode(null, "自动检测：未发现 channel handler");
+    }
   }
 }
 

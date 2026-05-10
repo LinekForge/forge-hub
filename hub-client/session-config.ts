@@ -140,7 +140,6 @@ export function readAndClearSessionConfig(
     logError(`session config layer 3 (instance-identities.json) 读失败: ${String(err)}`);
   }
 
-  // No launcher wrote session config: default to channel mode listening to all
-  // channels so open-source users do not silently land in tool mode.
-  return { channels: ["all"], isChannel: true };
+  // No session config found — caller should detect channel handler before deciding.
+  return null;
 }
