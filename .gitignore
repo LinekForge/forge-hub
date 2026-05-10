@@ -22,6 +22,7 @@ dist/
 *.local.json
 *.bak.*
 bun.lock
+CLAUDE.local.md
 
 # Test output
 /tmp/

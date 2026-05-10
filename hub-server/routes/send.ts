@@ -13,29 +13,12 @@ import { pushToInstances } from "../instance-manager.js";
 import { getCurrentConfig } from "../hub-state.js";
 import { synthesizeToOgg } from "../tts.js";
 
-function checkChannelHealth(channel: string): Response | null {
-  const health = getChannelHealth(channel);
-  const status = deriveHealthStatus(health);
-  if (status === "unhealthy") {
-    log(`⛔ 通道 ${channel} unhealthy（连续 ${health.consecutiveFailures} 次失败），拒绝出站`);
-    return Response.json({
-      success: false,
-      error: `通道 ${channel} 当前 unhealthy（连续 ${health.consecutiveFailures} 次失败，最近: ${health.lastError?.slice(0, 80) ?? "?"}）。等待自动恢复（~10 分钟）或重启 hub。`,
-      health_status: status,
-    });
-  }
-  if (status === "degraded") {
-    log(`⚠️ 通道 ${channel} degraded（连续 ${health.consecutiveFailures} 次失败），尝试发送`);
-  }
-  return null;
-}
-
 function buildSendWarning(channel: string): string | undefined {
   const health = getChannelHealth(channel);
   const status = deriveHealthStatus(health);
   const warnings: string[] = [];
-  if (status === "degraded") {
-    warnings.push(`通道 ${channel} 最近连续 ${health.consecutiveFailures} 次失败${health.lastError ? `（最近错误: ${health.lastError.slice(0, 60)}）` : ""}`);
+  if (status === "unhealthy" || status === "degraded") {
+    warnings.push(`通道 ${channel} 入站连续 ${health.consecutiveFailures} 次失败${health.lastError ? `（最近: ${health.lastError.slice(0, 60)}）` : ""}——发送仍会尝试，但对方回复可能收不到`);
   }
   if (health.lastMessageIn) {
     const mins = Math.floor((Date.now() - new Date(health.lastMessageIn).getTime()) / 60000);
@@ -55,9 +38,6 @@ async function handleSendRequest(
   const plugin = channelPlugins.get(body.channel);
   if (!plugin) return Response.json({ error: `unknown channel: ${body.channel}` }, { status: 404 });
 
-  const healthBlock = checkChannelHealth(body.channel);
-  if (healthBlock) return healthBlock;
-
   const resolved = resolveRecipient(body.channel, body.to);
   if (!resolved.ok) return Response.json({ success: false, error: resolved.error });
   const to = resolved.id;
@@ -72,7 +52,10 @@ async function handleSendRequest(
     if (result.success) {
       appendHistory(body.channel, "out", getOutboundFrom(body.instance), onSuccess(to));
       const warning = buildSendWarning(body.channel);
-      if (warning) return Response.json({ ...result, warning });
+      if (warning) {
+        log(`⚠️ 出站 [${body.channel}] 带 warning: ${warning.slice(0, 80)}`);
+        return Response.json({ ...result, warning });
+      }
     }
     return Response.json(result);
   } finally {
