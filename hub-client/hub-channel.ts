@@ -867,6 +867,7 @@ function gracefulExit(signal: string): void {
 process.stdin.on("end", () => gracefulExit("stdin-end"));
 process.on("SIGINT", () => gracefulExit("SIGINT"));
 process.on("SIGTERM", () => gracefulExit("SIGTERM"));
+process.on("SIGHUP", () => gracefulExit("SIGHUP"));
 
 main().catch((err) => {
   logError(`Fatal: ${String(err)}`);
