@@ -286,10 +286,9 @@ export type ChannelHealthStatus = "healthy" | "degraded" | "unhealthy" | "unknow
  * - degraded：连续 1-4 次失败
  * - unhealthy：连续 ≥5 次失败
  *
- * Natural decay（防死锁）：最后一次 failure 超过 HEALTH_DECAY_MS 且之后没新
- * failure → 返回 unknown（不 mutate state）。这样 "unhealthy → refuse 出站 →
- * 无法通过出站 reset health" 的死锁被打破——10 分钟后 status 自动 decay 到
- * unknown，下次出站正常 try，成功则 recordOutbound reset 到 healthy。
+ * Natural decay：最后一次 failure 超过 HEALTH_DECAY_MS 且之后没新
+ * failure → 返回 unknown（不 mutate state）。10 分钟后 status 自动 decay 到
+ * unknown，出站 warning 消失，recordOutbound reset 到 healthy。
  *
  * 纯函数，不写 Map——可以在 /status 等只读 endpoint 里自由调用。
  */
@@ -342,7 +341,7 @@ export function recordOutbound(channel: string): void {
 /**
  * 从 error 字符串里 redact 可能的敏感内容——token / bearer / url with token / JSON token field。
  *
- * 动机（redteam 轮二 C1）: lastError 后续被 checkChannelHealth / buildSendWarning
+ * 动机（redteam 轮二 C1）: lastError 后续被 buildSendWarning
  * 传到 Response → hub-channel MCP tool → Claude Code session context。agent-native
  * 架构下 raw error 成了 data exfiltration channel。plugin 可能 throw
  * `HTTP 401: {"token":"sk-xxx"}` 这种带 token 的 response body，必须入口 sanitize。
