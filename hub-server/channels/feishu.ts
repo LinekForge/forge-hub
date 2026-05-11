@@ -2,7 +2,7 @@
  * 飞书通道插件 — Forge Hub
  *
  * 基于 lark-cli（飞书官方 CLI）收发消息。
- * 收消息：lark-cli event +subscribe（WebSocket 事件订阅，NDJSON 流）
+ * 收消息：lark-cli event consume（事件订阅，NDJSON 流）
  * 发消息：lark-cli im +messages-send
  */
 
@@ -35,13 +35,13 @@ const LARK_CLI = resolveLarkCli();
 // ── Module State ────────────────────────────────────────────────────────────
 
 let hub: HubAPI;
-let subscribeProc: ReturnType<typeof spawn> | null = null;
+let consumeProc: ReturnType<typeof spawn> | null = null;
 let running = false;
 let health: ChannelHealth;
 
 // ── Stale Process Cleanup ──────────────────────────────────────────────────
 
-const LARK_EVENT_PATTERN = "lark-cli event \\+subscribe";
+const LARK_EVENT_PATTERN = "lark-cli event";
 
 function pgrepLarkEvent(): string | null {
   try {
@@ -83,7 +83,7 @@ async function cleanupStaleLarkCli(): Promise<void> {
   hub.log("残留 lark-cli 进程已清理");
 }
 
-// ── Subscription Health ────────────────────────────────────────────────────
+// ── Consume Health ─────────────────────────────────────────────────────────
 
 let eventCount = 0;
 let disconnectedAt = 0;
@@ -136,22 +136,21 @@ async function downloadFeishuMedia(
   }
 }
 
-// ── Event Subscription ──────────────────────────────────────────────────────
+// ── Event Consume ───────────────────────────────────────────────────────────
 
 function startSubscription(): void {
   running = true;
 
   const proc = spawn(LARK_CLI, [
-    "event", "+subscribe",
-    "--compact",
+    "event", "consume",
+    "im.message.receive_v1",
     "--as", "bot",
-    "--force",
-    "--filter", "^im\\.message",
   ], {
-    stdio: ["ignore", "pipe", "pipe"],
+    // stdin pipe: Hub 退出时管道断裂 → consume 检测 EOF → 自动退出
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
-  subscribeProc = proc;
+  consumeProc = proc;
 
   const rl = createInterface({ input: proc.stdout! });
 
@@ -185,22 +184,17 @@ function startSubscription(): void {
     const msg = stripAnsi(data.toString().trim());
     if (!msg) return;
 
-    // Classify stderr output
-    if (msg.includes("SDK Error") || msg.includes("disconnect") || msg.includes("connect failed")) {
-      hub.logError(`[subscribe] ${msg}`);
-    } else if (msg.includes("Connected") || msg.includes("reconnect")) {
-      hub.log(`[subscribe] ${msg}`);
-      if (msg.includes("Connected") && disconnectedAt > 0) {
+    if (msg.includes("Error") || msg.includes("disconnect") || msg.includes("connect failed")) {
+      hub.logError(`[consume] ${msg}`);
+      if (disconnectedAt === 0) disconnectedAt = Date.now();
+    } else if (msg.includes("ready") || msg.includes("reconnect")) {
+      hub.log(`[consume] ${msg}`);
+      if (disconnectedAt > 0) {
         health.onSuccess();
         disconnectedAt = 0;
       }
     } else {
-      hub.log(`[subscribe] ${msg}`);
-    }
-
-    // Track disconnect start
-    if ((msg.includes("disconnect") || msg.includes("SDK Error")) && disconnectedAt === 0) {
-      disconnectedAt = Date.now();
+      hub.log(`[consume] ${msg}`);
     }
   });
 
@@ -228,18 +222,9 @@ function startSubscription(): void {
 }
 
 async function handleMessage(event: Record<string, unknown>): Promise<void> {
-  // Compact format: type (not event_type), content is plain text
-  const eventType = (event.type ?? "") as string;
-  if (!eventType.includes("im.message")) {
-    // Graceful ignore: 非消息事件（如 bot_p2p_chat_entered_v1）不计入失败
-    if (eventType) hub.log(`[飞书] 忽略非消息事件: ${eventType}`);
-    return;
-  }
-
   const senderId = (event.sender_id ?? "") as string;
   const chatId = (event.chat_id ?? "") as string;
   const msgType = (event.message_type ?? "text") as string;
-  const senderName = (event.sender_name ?? senderId) as string;
 
   if (!senderId || !chatId) return;
 
@@ -249,12 +234,12 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const isAuthorizedDirect = !isGroupMessage && hub.isAllowed(senderId);
   if (!isAuthorizedDirect && !isAuthorizedGroup) {
     const rawPreview = (event.content ?? "") as string;
-    hub.logError(`⛔ 拒绝未授权: ${senderName} (${senderId}), 原文前 50: "${rawPreview.slice(0, 50)}"`);
+    hub.logError(`⛔ 拒绝未授权: ${senderId}, 原文前 50: "${rawPreview.slice(0, 50)}"`);
     hub.pushMessage({
       channel: "feishu",
       from: "system",
       fromId: "system",
-      content: hub.formatUnauthorizedNotice(senderName, senderId, rawPreview),
+      content: hub.formatUnauthorizedNotice(senderId, senderId, rawPreview),
       raw: {},
     });
     return;
@@ -264,14 +249,14 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const messageId = (event.message_id ?? event.id ?? "") as string;
   let content = (event.content ?? "") as string;
 
-  // Compact mode: image key is in content as "[Image: img_v3_xxx]" or "[图片: img_v3_xxx]"
+  // image key 在 content 里: "[Image: img_v3_xxx]" 或 "[图片: img_v3_xxx]"
   const imageKeyMatch = content.match(/\[(?:Image|图片):\s*(img_[^\]]+)\]/);
   if (imageKeyMatch && messageId) {
     const imageKey = imageKeyMatch[1];
     const filePath = await downloadFeishuMedia(messageId, "image", imageKey);
     content = filePath ? `[图片] ${filePath}` : `[图片: ${imageKey}]`;
   } else if (msgType === "file" && messageId) {
-    // Compact mode: file key might be in content as "[File: file_v3_xxx]"
+    // file key 可能在 content 里: "[File: file_v3_xxx]"
     const fileKeyMatch = content.match(/\[(?:File|文件):\s*(file_[^\]]+)\]/);
     const fileKey = fileKeyMatch?.[1] ?? (event.file_key ?? "") as string;
     const fileName = (event.file_name ?? "file") as string;
@@ -281,7 +266,7 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
     }
   } else if (msgType === "audio") {
     // 飞书 audio event 里只给 file_key（无 ASR），和 image/file 一样要手动下载
-    // compact mode 下 file_key 可能在 content "[Audio: xxx]" 里也可能在 event.file_key
+    // file_key 可能在 content "[Audio: xxx]" 里，也可能在 event.file_key
     const audioKeyMatch = content.match(/\[Audio:\s*(\S+?)\]/);
     const fileKey = audioKeyMatch?.[1] ?? (event.file_key ?? "") as string;
     if (fileKey && messageId) {
@@ -302,7 +287,7 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
 
   if (!content) return;
 
-  const senderDisplay = hub.getNickname(senderId) || senderName;
+  const senderDisplay = hub.getNickname(senderId) || senderId;
   const displayName = isAuthorizedGroup
     ? `${senderDisplay} @ ${hub.getNickname(chatId)}`
     : senderDisplay;
@@ -349,7 +334,7 @@ const plugin: ChannelPlugin = {
       baseRetryMs: 5000,
       onRestart: async () => {
         hub.log("[feishu] 完整重启：kill lark-cli → restart subscription");
-        if (subscribeProc) { subscribeProc.kill(); subscribeProc = null; }
+        if (consumeProc) { consumeProc.kill(); consumeProc = null; }
         startSubscription();
       },
       log: (msg) => hub.log(msg),
@@ -433,9 +418,10 @@ const plugin: ChannelPlugin = {
 
   async stop() {
     running = false;
-    const proc = subscribeProc;
-    subscribeProc = null;
+    const proc = consumeProc;
+    consumeProc = null;
     if (proc) {
+      proc.stdin?.end();
       await new Promise<void>((resolve) => {
         const timer = setTimeout(() => { proc.kill("SIGKILL"); resolve(); }, 3000);
         proc.once("close", () => { clearTimeout(timer); resolve(); });
