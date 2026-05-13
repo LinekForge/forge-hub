@@ -63,19 +63,42 @@ bun install
 }
 ```
 
-3. 注册为 Claude Code MCP server（`.claude.json` 或 `claude_desktop_config.json`）：
+3. 注册为 Claude Code MCP server——推荐用 `claude mcp add`（user scope，所有 session 共享）：
+```bash
+claude mcp add --scope user engine /Users/<you>/.bun/bin/bun /absolute/path/to/forge-engine/engine-channel.ts
+```
+
+或手写到 `~/.claude.json` 的 `mcpServers`：
 ```json
 {
   "mcpServers": {
     "engine": {
       "command": "bun",
-      "args": ["path/to/forge-engine/engine-channel.ts"]
+      "args": ["/absolute/path/to/forge-engine/engine-channel.ts"]
     }
   }
 }
 ```
 
-4. 用 `fh engine` 管理任务：
+4. **启动 Claude Code 时把 engine 加入 channels 白名单**——这一步**必不可少**，否则 engine 的定时通知会被 Claude Code 静默丢弃：
+
+```bash
+claude --dangerously-load-development-channels server:hub server:engine
+```
+
+> [!IMPORTANT]
+> Channels 是 research preview（详见 [Channels Reference](https://code.claude.com/docs/en/channels-reference)），自定义 channel server（包括 forge-engine、forge-hub 的 hub-channel）必须用 `--dangerously-load-development-channels server:<name>` 显式白名单才被识别。`claude mcp list` 显示 `✓ Connected` **只代表 MCP 子进程成功启动**，**不代表 channel 通知能投递**——后者还需要这一步。
+>
+> 多 channel 用**空格分隔**：`server:hub server:engine`（不是逗号）。和 forge-hub 一起用时两个都要加。如果你用 [forge-launcher](https://github.com/LinekForge/forge-launcher) 启动菜单栏会话管理器，它会自动带上这俩 flag。
+
+**验证 channel 通知是否真的接通**：
+```bash
+# 在跑 Claude Code 的窗口里让 agent 用 engine_add_task 工具加一个 30 秒后的一次性任务，
+# 如果 30 秒后窗口里收到 <channel source="engine" ...> 包裹的消息，说明白名单生效。
+# 收不到 → 检查是不是漏了 server:engine。
+```
+
+5. 用 `fh engine` 管理任务：
 ```bash
 fh engine list
 fh engine pause 30
