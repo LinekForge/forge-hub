@@ -1159,6 +1159,7 @@ if (!domain) {
   fh hub owner <ch> [id|nick|--clear]  查看或设置审批 owner
   fh hub allowlist [ch]          查看授权列表
   fh hub ps                      查看 hub-channel 进程状态
+  fh hub security [events|evidence]  查看安全事件和 evidence 记录
   fh hub preset list             查看通道预设
   fh hub preset add <n> <ch:N>   添加预设（如 wx:200 tg:50）
   fh hub preset remove <n>       删除预设
@@ -1169,6 +1170,56 @@ if (!domain) {
   fh engine log <text>           记一条手动行动日志
   fh engine log --read [n]       查看最近 n 条行动日志`);
   process.exit(0);
+}
+
+// ── hub security ────────────────────────────────────────────────────────────
+
+function hubSecurity(args: string[]): void {
+  const evDir = path.join(HUB_DIR, "evidence");
+  const secFile = path.join(HUB_DIR, "security-events.jsonl");
+
+  if (args[0] === "events" || !args[0]) {
+    if (!fs.existsSync(secFile)) {
+      console.log("无安全事件记录。");
+      return;
+    }
+    const lines = fs.readFileSync(secFile, "utf-8").trim().split("\n").filter(Boolean);
+    const recent = lines.slice(-20);
+    console.log(`\n安全事件（最近 ${recent.length} 条，共 ${lines.length} 条）：\n`);
+    for (const line of recent) {
+      try {
+        const e = JSON.parse(line);
+        console.log(`  ${e.first_seen_at?.slice(0, 19) ?? "?"} ~ ${e.last_seen_at?.slice(11, 19) ?? "?"}  ${e.channel}  ${e.message_count} 条  sender: ${e.sender_count}  alert: ${e.main_context_alert_emitted ? "是" : "否"}`);
+      } catch {
+        console.log(`  [解析失败] ${line.slice(0, 80)}`);
+      }
+    }
+    console.log();
+    return;
+  }
+
+  if (args[0] === "evidence") {
+    if (!fs.existsSync(evDir)) {
+      console.log("无 evidence 记录。");
+      return;
+    }
+    const files = fs.readdirSync(evDir).filter(f => f.endsWith(".jsonl") && f.startsWith("evidence_")).sort();
+    if (files.length === 0) {
+      console.log("无 evidence 记录。");
+      return;
+    }
+    let totalLines = 0;
+    for (const f of files) {
+      const lines = fs.readFileSync(path.join(evDir, f), "utf-8").trim().split("\n").filter(Boolean);
+      totalLines += lines.length;
+      console.log(`  ${f}  ${lines.length} 条`);
+    }
+    console.log(`\n共 ${totalLines} 条 evidence 记录。`);
+    console.log(`目录: ${evDir}`);
+    return;
+  }
+
+  console.log("用法: fh hub security [events|evidence]");
 }
 
 // ── hub ps ──────────────────────────────────────────────────────────────────
@@ -1275,6 +1326,7 @@ if (domain === "hub") {
     case "approval-audit": await hubApprovalAudit(rest); break;
     case "self-test": await hubSelfTest(); break;
     case "ps": hubPs(); break;
+    case "security": hubSecurity(rest); break;
     case "replay": await hubReplay(rest); break;
     case "send": await hubSend(rest); break;
     case "name": await hubName(rest); break;
