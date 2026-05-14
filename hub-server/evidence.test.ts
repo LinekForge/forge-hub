@@ -174,4 +174,37 @@ describe("recordUnauthorizedEvidence", () => {
     // The logError callback should have been called with the unauthorized notice
     expect(errors.some((e) => e.includes("拒绝未授权"))).toBe(true);
   });
+
+  test("empty updateId gets a unique fallback id and does not dedupe records together", () => {
+    const makeRecord = (rawJson: string) => recordUnauthorizedEvidence({
+      channel: "test-empty-id",
+      ingestMode: "polling",
+      updateId: "",
+      chatId: "chat-001",
+      messageId: null,
+      sourceUserId: "user-attacker",
+      contentType: "text",
+      contentMeta: {},
+      rawJson,
+      displayName: "Eve",
+      logError: () => {},
+    });
+
+    const first = makeRecord('{"text":"one"}');
+    const second = makeRecord('{"text":"two"}');
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first?.update_id).toBeTruthy();
+    expect(second?.update_id).toBeTruthy();
+    expect(first?.update_id).not.toBe(second?.update_id);
+    expect(first?.evidence_id).not.toBe(second?.evidence_id);
+
+    const evidenceDir = path.join(tmpDir, "evidence");
+    const files = fs.readdirSync(evidenceDir).filter((f) => f.endsWith(".jsonl"));
+    const lines = files.flatMap((file) =>
+      fs.readFileSync(path.join(evidenceDir, file), "utf-8").trim().split("\n").filter(Boolean)
+    );
+    expect(lines).toHaveLength(2);
+  });
 });

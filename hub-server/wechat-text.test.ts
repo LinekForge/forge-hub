@@ -1,22 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { chunkText } from "./channels/wechat-ilink.js";
-
-// stripMarkdown is module-private, so we duplicate the function here for testing.
-// Keep in sync with wechat.ts.
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, "").replace(/```$/g, ""))
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/__(.+?)__/g, "$1")
-    .replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, "$1")
-    .replace(/(?<!\w)_([^_]+?)_(?!\w)/g, "$1")
-    .replace(/~~(.+?)~~/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/^[>\s]*>\s?/gm, "")
-    .replace(/^[-*+]\s+/gm, "• ")
-    .replace(/^\d+\.\s+/gm, (m) => m);
-}
+import { stripMarkdown } from "./wechat-text-utils.js";
 
 describe("chunkText", () => {
   test("short text returns single chunk", () => {

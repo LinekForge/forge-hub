@@ -185,7 +185,6 @@ class HubClient {
                             scanner.hubChannelsBySID[fullSid] = channels
                         } else if isChannel {
                             scanner.hubChannelSIDs.insert(fullSid)
-                            scanner.hubChannelsBySID[fullSid] = ["all"]
                         }
                     }
                 }

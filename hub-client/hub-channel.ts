@@ -26,6 +26,13 @@ import {
   readAndClearSessionConfig,
   type SessionConfig,
 } from "./session-config.js";
+import {
+  classifyProtectedStatus,
+  classifyPublicHealthStatus,
+  HUB_AUTH_FAILURE_MESSAGE,
+  isHubReachable,
+  type HubProbeResult,
+} from "./hub-status.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -111,20 +118,45 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function probeHubStatus(timeoutMs = HUB_STATUS_TIMEOUT_MS): Promise<boolean> {
+let lastAuthFailureLogAt = 0;
+
+function logHubAuthFailure(): void {
+  const now = Date.now();
+  if (now - lastAuthFailureLogAt < 60_000) return;
+  lastAuthFailureLogAt = now;
+  logError(HUB_AUTH_FAILURE_MESSAGE);
+}
+
+async function fetchStatusCode(pathname: "/health" | "/status", init: RequestInit, timeoutMs: number): Promise<number | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${HUB_URL}/status`, {
-      headers: authHeaders(),
+    const res = await fetch(`${HUB_URL}${pathname}`, {
+      ...init,
       signal: controller.signal,
     });
-    return res.ok;
+    return res.status;
   } catch {
-    return false;
+    return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function probeHubStatus(timeoutMs = HUB_STATUS_TIMEOUT_MS): Promise<HubProbeResult> {
+  const healthStatus = await fetchStatusCode("/health", {}, timeoutMs);
+  if (healthStatus === null) {
+    return { kind: "unreachable", reason: "/health unreachable" };
+  }
+
+  const health = classifyPublicHealthStatus(healthStatus);
+  if (health.kind !== "ok") return health;
+
+  const protectedStatus = await fetchStatusCode("/status", { headers: authHeaders() }, timeoutMs);
+  if (protectedStatus === null) return health;
+
+  const status = classifyProtectedStatus(protectedStatus);
+  return status.kind === "unauthorized" ? status : health;
 }
 
 const SESSION_CONFIG = readAndClearSessionConfig(getSessionConfigPaths(HUB_DIR), INSTANCE_ID, logError);
@@ -263,9 +295,11 @@ async function waitForChannelHandlerReady(timeoutMs = CHANNEL_HANDLER_READY_TIME
 
 // ── Hub Auto-Start ──────────────────────────────────────────────────────────
 
-async function ensureHubRunning(): Promise<boolean> {
-  if (await probeHubStatus()) {
-    return true;
+async function ensureHubRunning(): Promise<HubProbeResult> {
+  const current = await probeHubStatus();
+  if (isHubReachable(current)) {
+    if (current.kind === "unauthorized") logHubAuthFailure();
+    return current;
   }
 
   // Hub not running, try to start it
@@ -281,17 +315,22 @@ async function ensureHubRunning(): Promise<boolean> {
     // Wait for Hub to start
     for (let i = 0; i < 20; i++) {
       await sleep(500);
-      if (await probeHubStatus()) {
+      const next = await probeHubStatus();
+      if (isHubReachable(next)) {
+        if (next.kind === "unauthorized") {
+          logHubAuthFailure();
+          return next;
+        }
         log("Hub 自动启动成功");
-        return true;
+        return next;
       }
     }
 
     logError("Hub 启动超时（10s）");
-    return false;
+    return { kind: "unreachable", reason: "Hub 启动超时（10s）" };
   } catch (err) {
     logError(`Hub 启动失败: ${String(err)}`);
-    return false;
+    return { kind: "unreachable", reason: `Hub 启动失败: ${String(err)}` };
   }
 }
 
@@ -503,16 +542,24 @@ async function connectWithRetry(): Promise<void> {
   let connectCount = 0;
 
   while (true) {
-    if (!await probeHubStatus()) {
-      const started = await ensureHubRunning();
-      if (!started) {
-        log("Hub 不可达，开始轮询 /status 等待恢复...");
+    let hubStatus = await probeHubStatus();
+    if (hubStatus.kind === "unreachable") {
+      hubStatus = await ensureHubRunning();
+      if (hubStatus.kind === "unreachable") {
+        log("Hub 不可达，开始轮询 /health 等待恢复...");
       }
-      while (!await probeHubStatus()) {
+      while (hubStatus.kind === "unreachable") {
         await sleep(HUB_RECOVERY_POLL_MS);
+        hubStatus = await probeHubStatus();
       }
       retryDelay = WS_RETRY_START_MS;
-      log("Hub 已恢复，立即重连 WebSocket...");
+      if (hubStatus.kind === "unauthorized") {
+        logHubAuthFailure();
+      } else {
+        log("Hub 已恢复，立即重连 WebSocket...");
+      }
+    } else if (hubStatus.kind === "unauthorized") {
+      logHubAuthFailure();
     }
 
     try {
@@ -522,11 +569,13 @@ async function connectWithRetry(): Promise<void> {
       retryDelay = WS_RETRY_START_MS;
     } catch (err) {
       const reason = String(err);
-      if (!await probeHubStatus()) {
+      const hubStatusAfterError = await probeHubStatus();
+      if (hubStatusAfterError.kind === "unreachable") {
         log(`WebSocket 断开，Hub 当前不可达；等待恢复后立即重连... (${reason})`);
         retryDelay = WS_RETRY_START_MS;
         continue;
       }
+      if (hubStatusAfterError.kind === "unauthorized") logHubAuthFailure();
 
       log(`WebSocket 断开，但 Hub 仍在线；${retryDelay / 1000}s 后重连... (${reason})`);
       await sleep(retryDelay);
@@ -826,8 +875,12 @@ function startChannelMode(label: string): void {
 
 async function startToolMode(config: SessionConfig | null, label: string): Promise<void> {
   persistToolIdentity(config);
-  const hubReady = await ensureHubRunning();
-  if (!hubReady) log("⚠ Hub 未就绪，工具调用会失败。请启动 Hub 或使用直连模式。");
+  const hubStatus = await ensureHubRunning();
+  if (hubStatus.kind === "unreachable") {
+    log("⚠ Hub 未就绪，工具调用会失败。请启动 Hub 或使用直连模式。");
+  } else if (hubStatus.kind === "unauthorized") {
+    log("⚠ Hub 在线但认证失败，工具调用会失败。请检查 token 配置。");
+  }
   log(`Hub Client 已启动 · 工具模式（${label}）`);
 }
 

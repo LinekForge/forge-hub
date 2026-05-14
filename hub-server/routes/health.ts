@@ -7,6 +7,7 @@ import { channelPlugins } from "../channel-registry.js";
 import { startedAt } from "../hub-state.js";
 import { pendingPermissions, PERMISSION_TTL_MS } from "../approval.js";
 import { readRecentHistory } from "../history.js";
+import { getPlugin } from "../channel-loader.js";
 
 export function handleHealth(): Response {
   return Response.json({
@@ -20,7 +21,13 @@ function buildChannelHealth() {
   return Object.fromEntries(
     [...channelPlugins.keys()].map(ch => {
       const h = health[ch] ?? { messagesIn: 0, messagesOut: 0, errors: 0, consecutiveFailures: 0, consecutiveSuccesses: 0 };
-      return [ch, { loaded: true, ...h, health_status: deriveHealthStatus(h as any) }];
+      const stoppedReason = getPlugin(ch)?.stoppedReason;
+      return [ch, {
+        loaded: true,
+        ...h,
+        health_status: deriveHealthStatus(h as any),
+        ...(stoppedReason ? { stoppedReason } : {}),
+      }];
     })
   );
 }

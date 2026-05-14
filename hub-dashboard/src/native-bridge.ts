@@ -70,7 +70,6 @@ export const bridge = {
   getChannelPresets: () => call<Array<{ name: string; subscribe: string[]; history: Record<string, number> }>>("getChannelPresets"),
 
   pickFile: () => call<string>("pickFile"),
-  sendFile: (sid: string, filePath: string) => call<boolean>("sendFile", { sid, filePath }),
 
   quit: () => call<void>("quit"),
 };

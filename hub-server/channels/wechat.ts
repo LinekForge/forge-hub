@@ -6,7 +6,7 @@
  */
 
 import { ChannelStartSkipError } from "../types.js";
-import type { ChannelPlugin, HubAPI, SendResult } from "../types.js";
+import type { ChannelPlugin, ChannelStopReason, HubAPI, SendResult } from "../types.js";
 import type { AccountData, WeixinMessage } from "./wechat-types.js";
 import { MSG_TYPE_USER } from "./wechat-types.js";
 import { getUpdates, sendText, getConfig, sendTyping } from "./wechat-ilink.js";
@@ -14,6 +14,7 @@ import { uploadAndSendMedia, sendTtsAsMp3File, downloadMediaItem } from "./wecha
 import { STATE_DIR, redactSensitive } from "../config.js";
 import { ChannelHealth } from "../channel-health.js";
 import { recordUnauthorizedEvidence } from "../evidence.js";
+import { stripMarkdown } from "../wechat-text-utils.js";
 import path from "node:path";
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -45,21 +46,6 @@ function dedupMessage(msgId: string | undefined): boolean {
     seenMessageIds.delete(first);
   }
   return false;
-}
-
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, "").replace(/```$/g, ""))
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/__(.+?)__/g, "$1")
-    .replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, "$1")
-    .replace(/(?<!\w)_([^_]+?)_(?!\w)/g, "$1")
-    .replace(/~~(.+?)~~/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/^[>\s]*>\s?/gm, "")
-    .replace(/^[-*+]\s+/gm, "• ")
-    .replace(/^\d+\.\s+/gm, (m) => m);
 }
 
 // ── Typing Indicator ─────────────────────────────────────────────────────────
@@ -235,11 +221,15 @@ export const __test__ = {
 
 // ── Polling Loop ────────────────────────────────────────────────────────────
 
+type WechatErrorClassification =
+  | { fatal: false }
+  | { fatal: true; reason: string; stoppedReason: ChannelStopReason };
+
 /** 简版 classifyError：auth 错误立刻停止（无限 retry 无意义），其他算可重试 */
-function classifyWechatError(errmsg: string, errcode?: number): { fatal: boolean; reason?: string } {
+function classifyWechatError(errmsg: string, errcode?: number): WechatErrorClassification {
   const lower = (errmsg ?? "").toLowerCase();
   if (errcode === 401 || lower.includes("token") || lower.includes("auth") || lower.includes("unauthorized")) {
-    return { fatal: true, reason: "auth/token 失效" };
+    return { fatal: true, reason: "auth/token 失效", stoppedReason: "auth" };
   }
   return { fatal: false };
 }
@@ -268,7 +258,7 @@ async function startPolling(): Promise<void> {
         const classified = classifyWechatError(errMsg, resp.errcode);
         if (classified.fatal) {
           hub.logError(`💀 不可恢复错误（${classified.reason}）: ret=${resp.ret} errcode=${resp.errcode} errmsg=${errMsg}。停止微信轮询。`);
-          plugin.stoppedReason = classified.reason === "token" ? "auth" : "config";
+          plugin.stoppedReason = classified.stoppedReason;
           break;
         }
 

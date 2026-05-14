@@ -146,6 +146,34 @@ describe("SecurityEventAggregator", () => {
     expect(msg).not.toContain("ev_secret");
   }, 10000);
 
+  test("alert flushes security event before notifying main context", async () => {
+    let fileExistsDuringAlert = false;
+    let eventWasMarkedDuringAlert = false;
+    aggregator.flushAndStop();
+    aggregator = new SecurityEventAggregator(() => {
+      const filePath = path.join(hubDir, "security-events.jsonl");
+      fileExistsDuringAlert = fs.existsSync(filePath);
+      if (fileExistsDuringAlert) {
+        const line = fs.readFileSync(filePath, "utf-8").trim().split("\n").at(-1);
+        const parsed = line ? JSON.parse(line) : null;
+        eventWasMarkedDuringAlert = parsed?.main_context_alert_emitted === true;
+      }
+    });
+
+    aggregator.recordUnauthorized({
+      channel: "telegram",
+      sourceUserId: "evil_user_42",
+      contentType: "text",
+      evidenceId: "ev_secret",
+    });
+
+    await new Promise((r) => setTimeout(r, 6000));
+
+    expect(fileExistsDuringAlert).toBe(true);
+    expect(eventWasMarkedDuringAlert).toBe(true);
+    expect(aggregator.getActiveEvents()).toHaveLength(0);
+  }, 10000);
+
   // ── 6. Flush writes to disk ─────────────────────────────────────────────
 
   test("flush writes security-events.jsonl with correct content", () => {

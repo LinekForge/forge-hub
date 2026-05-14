@@ -159,8 +159,9 @@ export class SecurityEventAggregator {
     }
 
     this.lastGlobalAlertAt = Date.now();
+    this.flush();
     this.onMainContextAlert(
-      `⚠️ 检测到未授权访问尝试（${channel} 通道）。详情见 fh hub security 或 Dashboard。`,
+      `⚠️ 检测到未授权访问尝试（${channel} 通道）。详情见 fh hub security。`,
     );
   }
 }

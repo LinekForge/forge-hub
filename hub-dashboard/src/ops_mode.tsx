@@ -284,7 +284,7 @@ function OpsMode({ ais, channels, routerLog, approvalQueue, system }: OpsModePro
                           const ChanIcon = CHANNEL_ICON[chan.icon];
                           return <ChanIcon key={cid} size={13} style={{ color: 'var(--text-2)' }}/>;
                         })}
-                        {ai.channels.length === 0 && <span style={{ color: 'var(--text-4)' }}>—</span>}
+	                        {ai.channels.length === 0 && <span style={{ color: 'var(--text-4)' }}>{ai.isChannel ? '全部' : '—'}</span>}
                       </div>
                     </td>
                     <td style={opsStyles.td}>{ai.uptime}</td>

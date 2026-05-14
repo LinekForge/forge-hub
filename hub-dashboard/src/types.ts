@@ -20,6 +20,7 @@ export interface ChannelHealth {
   lastMessageIn?: string;
   lastMessageOut?: string;
   lastError?: string;
+  stoppedReason?: string;
 }
 
 export interface Message {

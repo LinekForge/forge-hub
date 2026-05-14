@@ -54,21 +54,26 @@ interface ChainState {
 }
 
 let cachedChainState: ChainState | null = null;
+let cachedChainStatePath: string | null = null;
 
 function readChainState(): ChainState {
-  if (cachedChainState) return cachedChainState;
+  const statePath = chainStatePath();
+  if (cachedChainState && cachedChainStatePath === statePath) return cachedChainState;
   try {
-    const raw = fs.readFileSync(chainStatePath(), "utf-8");
+    const raw = fs.readFileSync(statePath, "utf-8");
     cachedChainState = JSON.parse(raw) as ChainState;
+    cachedChainStatePath = statePath;
     return cachedChainState;
   } catch {
     cachedChainState = { last_entry_hash: null };
+    cachedChainStatePath = statePath;
     return cachedChainState;
   }
 }
 
 function writeChainState(state: ChainState): void {
   cachedChainState = state;
+  cachedChainStatePath = chainStatePath();
   fs.writeFileSync(chainStatePath(), JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
 }
 
@@ -125,15 +130,15 @@ export function computeEntryHash(prevHash: string | null, record: Record<string,
   return crypto.createHash("sha256").update(payload).digest("hex");
 }
 
-let dirEnsured = false;
+let ensuredEvidenceDir: string | null = null;
 
 function ensureEvidenceDir(): void {
-  if (dirEnsured) return;
   const dir = getEvidenceDir();
+  if (ensuredEvidenceDir === dir) return;
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
-    dirEnsured = true;
+    ensuredEvidenceDir = dir;
   } catch (err) {
     logError(`evidence 目录创建失败: ${String(err)}`);
     throw err;
@@ -244,14 +249,20 @@ export interface RecordUnauthorizedOpts {
   logError: (msg: string) => void;
 }
 
+function normalizeUpdateId(updateId: string): string {
+  const trimmed = updateId.trim();
+  return trimmed || `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
 export function recordUnauthorizedEvidence(opts: RecordUnauthorizedOpts): EvidenceRecord | null {
   let record: EvidenceRecord | null = null;
+  const updateId = normalizeUpdateId(opts.updateId);
   try {
     record = appendEvidence({
       received_at: new Date().toISOString(),
       channel: opts.channel,
       ingest_mode: opts.ingestMode,
-      update_id: opts.updateId,
+      update_id: updateId,
       chat_id: opts.chatId,
       message_id: opts.messageId,
       source_user_id: opts.sourceUserId,
@@ -268,7 +279,7 @@ export function recordUnauthorizedEvidence(opts: RecordUnauthorizedOpts): Eviden
     });
   } catch (err) {
     opts.logError(`evidence 写入失败: ${String(err)}`);
-    writeFallback(opts.rawJson, opts.channel, opts.updateId);
+    writeFallback(opts.rawJson, opts.channel, updateId);
   }
 
   const safe = sanitizeDisplayName(opts.displayName);

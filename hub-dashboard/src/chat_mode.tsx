@@ -532,6 +532,7 @@ function ChannelConfigDialog({ title, channels, preselected, onConfirm, onCancel
   onConfirm: (config: { channels: string[]; history: Record<string, number> }) => void;
   onCancel: () => void;
 }) {
+  const allChannelId = 'all';
   const [selected, setSelected] = React.useState<Set<string>>(() => {
     if (preselected.length > 0) return new Set(preselected);
     return new Set(channels.map(c => c.id));
@@ -541,6 +542,9 @@ function ChannelConfigDialog({ title, channels, preselected, onConfirm, onCancel
     channels.forEach(c => { h[c.id] = '10'; });
     return h;
   });
+  const allSelected = selected.has(allChannelId);
+  const selectedChannels = [...selected].filter(id => id !== allChannelId);
+  const canConfirm = allSelected || selectedChannels.length > 0;
 
   return (
     <div style={{
@@ -558,12 +562,23 @@ function ChannelConfigDialog({ title, channels, preselected, onConfirm, onCancel
           订阅：接收该通道的实时消息 · 历史：启动时回放的条数
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, cursor: 'pointer', fontSize: 13, color: 'var(--text-1)' }}>
+              <input type="checkbox" checked={allSelected}
+                onChange={() => setSelected(prev => prev.has(allChannelId) ? new Set<string>() : new Set<string>([allChannelId]))}
+                style={{ accentColor: 'var(--indigo)' }}
+              />
+              全部通道
+            </label>
+            <span style={{ width: 74, fontSize: 11, color: 'var(--text-4)' }}>默认历史</span>
+          </div>
           {channels.map(ch => (
             <div key={ch.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, cursor: 'pointer', fontSize: 13, color: 'var(--text-1)' }}>
-                <input type="checkbox" checked={selected.has(ch.id)}
+                <input type="checkbox" checked={!allSelected && selected.has(ch.id)} disabled={allSelected}
                   onChange={() => setSelected(prev => {
                     const next = new Set(prev);
+                    next.delete(allChannelId);
                     if (next.has(ch.id)) {
                       next.delete(ch.id);
                     } else {
@@ -593,14 +608,18 @@ function ChannelConfigDialog({ title, channels, preselected, onConfirm, onCancel
             padding: '7px 14px', borderRadius: 8, border: '1px solid var(--border)',
             background: 'transparent', color: 'var(--text-2)', fontSize: 12, cursor: 'pointer',
           }}>取消</button>
-          <button onClick={() => {
-            const ch = [...selected];
+          <button disabled={!canConfirm} onClick={() => {
+            if (!canConfirm) return;
+            const ch = allSelected ? [] : selectedChannels;
             const h: Record<string, number> = {};
             for (const id of ch) h[id] = parseInt(historyCounts[id] ?? '10', 10) || 10;
             onConfirm({ channels: ch, history: h });
           }} style={{
             padding: '7px 14px', borderRadius: 8, border: '1px solid rgba(99,102,241,0.3)',
-            background: 'rgba(99,102,241,0.15)', color: 'var(--indigo)', fontSize: 12, cursor: 'pointer',
+            background: canConfirm ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+            color: canConfirm ? 'var(--indigo)' : 'var(--text-4)',
+            fontSize: 12,
+            cursor: canConfirm ? 'pointer' : 'not-allowed',
           }}>以此启动</button>
         </div>
       </div>
@@ -760,16 +779,17 @@ function ContactList({ activeId, hubVersion, ais, lastMessages, onSelect, search
                 bridge.fetchHubChannels().then(hubCh => {
                   const sessions = useHubStore.getState().nativeSessions;
                   const session = sessions.find((s: { sid: string }) => s.sid === sid);
-                  const pre = session?.channels?.length ? session.channels : [];
                   const channelList = hubCh.length > 0
                     ? hubCh.map((c: { id: string; name: string }) => ({ id: c.id, name: c.name }))
                     : [{ id: 'wechat', name: '微信' }, { id: 'telegram', name: 'Telegram' }, { id: 'feishu', name: '飞书' }, { id: 'imessage', name: 'iMessage' }, { id: 'homeland', name: 'Homeland' }];
+                  const isAllChannel = session?.isChannel && !(session.channels?.length);
+                  const pre = isAllChannel ? ['all'] : session?.channels?.length ? session.channels : [];
                   setChannelDialog({ sid, channels: channelList, preselected: pre });
                 }).catch(() => {
                   setChannelDialog({
                     sid,
                     channels: [{ id: 'wechat', name: '微信' }, { id: 'telegram', name: 'Telegram' }, { id: 'feishu', name: '飞书' }, { id: 'imessage', name: 'iMessage' }, { id: 'homeland', name: 'Homeland' }],
-                    preselected: [],
+                    preselected: ['all'],
                   });
                 });
                 break;
@@ -976,9 +996,13 @@ function Profile({ ai, pending, channels, activeSource, onSourceChange }: Profil
               );
             })}
           </div>
+        ) : ai.isChannel ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <span style={chatStyles.channelPill}>全部通道</span>
+          </div>
         ) : (
           <div style={chatStyles.mutedText}>
-            {ai.isChannel ? '当前没有限定通道，接手时会按 Hub 配置决定。' : '这个实例只保留工具能力，不监听任何外部通道。'}
+            这个实例只保留工具能力，不监听任何外部通道。
           </div>
         )}
       </div>
