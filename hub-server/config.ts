@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { enqueueAppend } from "./write-queue.js";
+import { sanitizeDisplayName, sanitizeExternalField } from "./sanitize.js";
 
 // ── Binary Resolvers（共享 util）─────────────────────────────────────────────
 
@@ -436,8 +437,9 @@ export function appendAudit(entry: Record<string, unknown>): void {
  * 文案设计考虑：
  * - 明确前缀 "⚠️ 未授权用户尝试联系 {channel}" 让Forge 一眼识别是告警
  * - 不回显外部原文，避免未授权 sender 通过告警进入 agent 上下文
+ * - displayName / senderId 也按外部输入处理：XML escape、去控制字符、单行化、截断
  *
- * 本阶段统一 4 通道 + Hub 入口全部用此 helper，避免文案分裂。
+ * 内置通道优先记录 evidence / security event；这个 helper 仍给第三方 plugin 和旧示例自防护。
  */
 export function formatUnauthorizedNotice(
   channel: string,
@@ -445,8 +447,19 @@ export function formatUnauthorizedNotice(
   senderId: string,
   _rawContent: string,
 ): string {
+  const safeDisplayName = sanitizeNoticeField(sanitizeDisplayName(displayName).displayValue, "unknown");
+  const safeSenderId = sanitizeNoticeField(sanitizeExternalField(senderId, 128).displayValue, "unknown");
   return [
-    `⚠️ 未授权用户尝试联系 ${channel}: ${displayName} (${senderId})`,
+    `⚠️ 未授权用户尝试联系 ${channel}: ${safeDisplayName} (${safeSenderId})`,
     `[未授权消息已拦截，原文不回显。详见 Hub 日志。]`,
   ].join("\n");
+}
+
+function sanitizeNoticeField(value: string, fallback: string): string {
+  const oneLine = value
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[\x00-\x1F\x7F]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return oneLine || fallback;
 }

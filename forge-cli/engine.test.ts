@@ -5,11 +5,13 @@ import path from "node:path";
 
 import {
   buildEngineLogEntry,
+  findExactEngineScheduleFile,
   findEngineRemoveMatches,
   formatLocalTimestamp,
   getEnginePaths,
   listEngineSchedules,
   updateEnginePauseConfig,
+  validateEngineRemoveQuery,
 } from "./engine.js";
 
 const tempDirs: string[] = [];
@@ -88,6 +90,64 @@ describe("engine CLI helpers", () => {
     expect(findEngineRemoveMatches(engineScheduleDir, "收尾")).toEqual([
       { file: "focus.json", prompt: "收尾检查", time: "20:00" },
     ]);
+  });
+
+  test("validates engine remove queries as schedule basenames only", () => {
+    expect(validateEngineRemoveQuery("focus.json")).toEqual({ ok: true });
+    expect(validateEngineRemoveQuery("../victim.txt")).toEqual({
+      ok: false,
+      reason: "任务名不能包含路径分隔符或 ..",
+    });
+    expect(validateEngineRemoveQuery("nested/focus.json")).toEqual({
+      ok: false,
+      reason: "任务名不能包含路径分隔符或 ..",
+    });
+  });
+
+  test("finds exact remove target only from engine.d json basenames", () => {
+    const home = mkTempDir("forge-engine-cli-");
+    const { engineScheduleDir } = getEnginePaths(home);
+    fs.mkdirSync(engineScheduleDir, { recursive: true });
+    fs.writeFileSync(path.join(engineScheduleDir, "focus.json"), JSON.stringify({ schedules: [] }), "utf-8");
+    fs.writeFileSync(path.join(engineScheduleDir, "notes.txt"), "not a schedule", "utf-8");
+
+    expect(findExactEngineScheduleFile(engineScheduleDir, "focus.json")).toBe("focus.json");
+    expect(findExactEngineScheduleFile(engineScheduleDir, "notes.txt")).toBeNull();
+    expect(findExactEngineScheduleFile(engineScheduleDir, "../focus.json")).toBeNull();
+  });
+
+  test("engine remove rejects path traversal without deleting outside engine.d", async () => {
+    const home = mkTempDir("forge-engine-cli-");
+    const dataDir = path.join(home, "engine-data");
+    const { engineScheduleDir } = getEnginePaths(home, dataDir);
+    fs.mkdirSync(engineScheduleDir, { recursive: true });
+    const victim = path.join(dataDir, "victim.txt");
+    fs.writeFileSync(victim, "keep me", "utf-8");
+
+    const proc = Bun.spawn([
+      process.execPath,
+      path.join(import.meta.dir, "forge.ts"),
+      "engine",
+      "remove",
+      "../victim.txt",
+    ], {
+      env: {
+        ...process.env,
+        FORGE_ENGINE_DATA: dataDir,
+        HOME: home,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [exitCode, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("非法任务名");
+    expect(fs.readFileSync(victim, "utf-8")).toBe("keep me");
   });
 
   test("pause 0 resumes engine immediately", () => {

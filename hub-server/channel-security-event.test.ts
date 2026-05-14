@@ -31,7 +31,7 @@ describe("channel security event bridge", () => {
     for (const file of channelFiles) {
       const source = fs.readFileSync(path.join(import.meta.dir, "channels", file), "utf-8");
       const evidenceCalls = source.match(/recordUnauthorizedEvidence\(/g)?.length ?? 0;
-      const eventCalls = source.match(/hub\.recordSecurityEvent\(/g)?.length ?? 0;
+      const eventCalls = source.match(/\b(?:hub|hubApi)\.recordSecurityEvent\(/g)?.length ?? 0;
 
       expect(evidenceCalls).toBeGreaterThan(0);
       expect(eventCalls).toBe(evidenceCalls);

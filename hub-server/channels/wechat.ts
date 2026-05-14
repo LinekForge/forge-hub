@@ -112,8 +112,21 @@ async function handleTypingBeforeSend(senderId: string, contextToken: string): P
 // ── Content Extraction ──────────────────────────────────────────────────────
 
 const MEDIA_DIR = path.join(STATE_DIR, "wechat", "media");
+type DownloadMediaItem = typeof downloadMediaItem;
+type RecordUnauthorized = typeof recordUnauthorizedEvidence;
 
-async function extractContent(msg: WeixinMessage): Promise<string> {
+function inferWechatContentType(msg: WeixinMessage): string {
+  for (const item of msg.item_list ?? []) {
+    if (item.text_item?.text) return "text";
+    if (item.type === 2) return "image";
+    if (item.type === 3) return "voice";
+    if (item.type === 4) return "file";
+    if (item.type === 5) return "video";
+  }
+  return "unknown";
+}
+
+async function extractContent(msg: WeixinMessage, hubApi: HubAPI, downloadMedia: DownloadMediaItem): Promise<string> {
   if (!msg.item_list?.length) return "";
 
   const parts: string[] = [];
@@ -136,11 +149,11 @@ async function extractContent(msg: WeixinMessage): Promise<string> {
 
     // Media: download
     if (item.type === 2 || item.type === 3 || item.type === 4 || item.type === 5) {
-      const media = await downloadMediaItem(item as any, MEDIA_DIR);
+      const media = await downloadMedia(item as any, MEDIA_DIR);
       if (media) {
         const labels: Record<string, string> = { image: "图片", voice: "语音文件", file: "文件", video: "视频" };
         parts.push(`[${labels[media.type]}] 已保存到 ${media.filePath}`);
-        hub.log(`📎 ${labels[media.type]}: ${media.filePath}`);
+        hubApi.log(`📎 ${labels[media.type]}: ${media.filePath}`);
       } else {
         const typeNames: Record<number, string> = { 2: "图片", 3: "语音", 4: "文件", 5: "视频" };
         parts.push(`[${typeNames[item.type ?? 0] || "未知媒体"}] (无法下载)`);
@@ -151,6 +164,70 @@ async function extractContent(msg: WeixinMessage): Promise<string> {
 
   return parts.join("\n");
 }
+
+interface HandleWechatUserMessageDeps {
+  hubApi: HubAPI;
+  downloadMedia?: DownloadMediaItem;
+  recordUnauthorized?: RecordUnauthorized;
+  startTypingFn?: (senderId: string, contextToken: string) => void;
+}
+
+async function handleWechatUserMessage(msg: WeixinMessage, deps: HandleWechatUserMessageDeps): Promise<void> {
+  const hubApi = deps.hubApi;
+  const senderId = msg.from_user_id ?? "unknown";
+
+  if (!hubApi.isAllowed(senderId)) {
+    const contentType = inferWechatContentType(msg);
+    const recordUnauthorized: RecordUnauthorized = deps.recordUnauthorized ?? ((opts) => recordUnauthorizedEvidence(opts));
+    const evidence = recordUnauthorized({
+      channel: "wechat",
+      ingestMode: "polling",
+      updateId: msg.message_id ?? "",
+      chatId: senderId,
+      messageId: msg.message_id ? String(msg.message_id) : null,
+      sourceUserId: senderId,
+      contentType,
+      contentMeta: { content_type: contentType, item_count: msg.item_list?.length ?? 0 },
+      rawJson: JSON.stringify(msg),
+      displayName: senderId,
+      logError: (m) => hubApi.logError(m),
+    });
+    hubApi.recordSecurityEvent({
+      sourceUserId: senderId,
+      contentType,
+      evidenceId: evidence?.evidence_id ?? "",
+    });
+    return;
+  }
+
+  const content = await extractContent(msg, hubApi, deps.downloadMedia ?? downloadMediaItem);
+  if (!content) return;
+
+  if (msg.context_token) {
+    const tokens = (hubApi.getState("context-tokens") ?? {}) as Record<string, string>;
+    tokens[senderId] = msg.context_token;
+    hubApi.setState("context-tokens", tokens);
+  }
+
+  const nick = hubApi.getNickname(senderId);
+  hubApi.log(`← ${nick}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
+
+  const startTypingForMessage = deps.startTypingFn ?? startTyping;
+  startTypingForMessage(senderId, msg.context_token ?? "");
+
+  hubApi.pushMessage({
+    channel: "wechat",
+    from: nick,
+    fromId: senderId,
+    content,
+    raw: { context_token: msg.context_token ?? "" },
+  });
+}
+
+export const __test__ = {
+  inferWechatContentType,
+  handleWechatUserMessage,
+};
 
 // ── Chat History ────────────────────────────────────────────────────────────
 
@@ -215,56 +292,7 @@ async function startPolling(): Promise<void> {
         if (msg.message_type !== MSG_TYPE_USER) continue;
         if (dedupMessage(msg.message_id)) continue;
 
-        const content = await extractContent(msg);
-        if (!content) continue;
-
-        const senderId = msg.from_user_id ?? "unknown";
-
-        if (!hub.isAllowed(senderId)) {
-          const contentType = content.includes("[图片]") ? "image"
-            : content.includes("[语音]") ? "voice"
-            : content.includes("[文件]") ? "file"
-            : content ? "text" : "unknown";
-
-          const evidence = recordUnauthorizedEvidence({
-            channel: "wechat",
-            ingestMode: "polling",
-            updateId: msg.message_id ?? "",
-            chatId: senderId,
-            messageId: msg.message_id ? String(msg.message_id) : null,
-            sourceUserId: senderId,
-            contentType,
-            contentMeta: { content_type: contentType },
-            rawJson: JSON.stringify(msg),
-            displayName: senderId,
-            logError: (m) => hub.logError(m),
-          });
-          hub.recordSecurityEvent({
-            sourceUserId: senderId,
-            contentType,
-            evidenceId: evidence?.evidence_id ?? "",
-          });
-          continue;
-        }
-
-        if (msg.context_token) {
-          const tokens = (hub.getState("context-tokens") ?? {}) as Record<string, string>;
-          tokens[senderId] = msg.context_token;
-          hub.setState("context-tokens", tokens);
-        }
-
-        const nick = hub.getNickname(senderId);
-        hub.log(`← ${nick}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
-
-        startTyping(senderId, msg.context_token ?? "");
-
-        hub.pushMessage({
-          channel: "wechat",
-          from: nick,
-          fromId: senderId,
-          content,
-          raw: { context_token: msg.context_token ?? "" },
-        });
+        await handleWechatUserMessage(msg, { hubApi: hub });
       }
     } catch (err) {
       if (!health.isDormant()) {

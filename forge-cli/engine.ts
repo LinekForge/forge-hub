@@ -21,6 +21,10 @@ export interface EngineMatch {
   time: string;
 }
 
+export type EngineRemoveQueryValidation =
+  | { ok: true }
+  | { ok: false; reason: string };
+
 export function getEnginePaths(
   home = process.env.HOME ?? "~",
   dataDir = process.env.FORGE_ENGINE_DATA,
@@ -101,6 +105,25 @@ export function listEngineSchedules(
   }
 
   return lines;
+}
+
+export function validateEngineRemoveQuery(query: string): EngineRemoveQueryValidation {
+  if (!query.trim()) {
+    return { ok: false, reason: "任务名不能为空" };
+  }
+  if (query.includes("/") || query.includes("\\") || query.includes("..")) {
+    return { ok: false, reason: "任务名不能包含路径分隔符或 .." };
+  }
+  return { ok: true };
+}
+
+export function findExactEngineScheduleFile(
+  scheduleDir: string,
+  query: string,
+): string | null {
+  if (!fs.existsSync(scheduleDir)) return null;
+  const files = fs.readdirSync(scheduleDir).filter((f) => f.endsWith(".json")).sort();
+  return files.includes(query) ? query : null;
 }
 
 export function findEngineRemoveMatches(

@@ -17,7 +17,7 @@ sleep 1
 # 2. Build dashboard
 if [ -d "$DASHBOARD_DIR" ]; then
   echo "  → 编译 Dashboard..."
-  (cd "$DASHBOARD_DIR" && bun install --frozen-lockfile 2>/dev/null; bun run build 2>&1 | tail -3)
+  (cd "$DASHBOARD_DIR" && bun install --frozen-lockfile 2>/dev/null && bun run build)
 fi
 
 # 3. Create .app bundle

@@ -1,4 +1,5 @@
 import Cocoa
+import Dispatch
 import os
 
 private let log = OSLog(subsystem: "com.linekforge.hub-app", category: "HubClient")
@@ -10,7 +11,7 @@ private let log = OSLog(subsystem: "com.linekforge.hub-app", category: "HubClien
 class HubClient {
     let scanner: SessionScanner
 
-    /// Hub 当前是否可达。每次 `enrichScanResults` 更新——curl /instances
+    /// Hub 当前是否可达。每次 `enrichScanResults` 更新——Hub /instances
     /// 成功且能 parse JSON 即 true，连接失败/超时/格式错都算 false。
     private(set) var isHubOnline: Bool = false
 
@@ -69,14 +70,76 @@ class HubClient {
         return data.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func authHeaderArgs() -> [String] {
+    private func authHeaders() -> [String: String] {
         let token = readAuthToken()
-        if token.isEmpty { return [] }
-        return ["-H", "Authorization: Bearer \(token)"]
+        if token.isEmpty { return [:] }
+        return ["Authorization": "Bearer \(token)"]
     }
 
-    private func curlArgs(_ args: [String]) -> [String] {
-        return args + authHeaderArgs()
+    private func hubURL(path: String) -> URL? {
+        var components = URLComponents(string: "http://localhost:9900")
+        components?.path = path.hasPrefix("/") ? path : "/\(path)"
+        return components?.url
+    }
+
+    private func hubRequest(path: String, method: String = "GET", body: [String: Any]? = nil, timeout: TimeInterval = 2.0) -> Data? {
+        guard let url = hubURL(path: path) else { return nil }
+
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.httpMethod = method
+        for (name, value) in authHeaders() {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            guard let json = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+            request.httpBody = json
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        let session = URLSession(configuration: configuration)
+        let semaphore = DispatchSemaphore(value: 0)
+        final class ResultBox {
+            var data: Data?
+            var response: URLResponse?
+            var error: Error?
+        }
+        let result = ResultBox()
+
+        let task = session.dataTask(with: request) { data, response, error in
+            result.data = data
+            result.response = response
+            result.error = error
+            semaphore.signal()
+        }
+        task.resume()
+
+        if semaphore.wait(timeout: .now() + timeout + 0.5) == .timedOut {
+            task.cancel()
+            session.invalidateAndCancel()
+            return nil
+        }
+        session.finishTasksAndInvalidate()
+
+        guard result.error == nil,
+              let http = result.response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let data = result.data else {
+            return nil
+        }
+        return data
+    }
+
+    private func hubJSON(path: String, timeout: TimeInterval = 2.0) -> [String: Any]? {
+        guard let data = hubRequest(path: path, timeout: timeout) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    @discardableResult
+    private func hubPost(path: String, body: [String: Any], timeout: TimeInterval = 5.0) -> Bool {
+        return hubRequest(path: path, method: "POST", body: body, timeout: timeout) != nil
     }
 
     // MARK: - Hub Metadata Enrichment
@@ -96,53 +159,37 @@ class HubClient {
 
         // Fetch tags/descriptions from Hub API — 同时更新 isHubOnline 状态
         var online = false
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        task.arguments = curlArgs(["-s", "--connect-timeout", "2", "http://localhost:9900/instances"])
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        do {
-            try task.run()
-            task.waitUntilExit()
-            // curl exit 0 + 能 parse JSON 才算 online——区分"连不上 Hub"和"Hub 在但返回空列表"
-            if task.terminationStatus == 0 {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    online = true
-                    if let instances = json["instances"] as? [[String: Any]] {
-                        // 从第一个 id 学 Hub 的 instance 前缀
-                        if let firstId = instances.first?["id"] as? String,
-                           let dashIdx = firstId.firstIndex(of: "-") {
-                            instancePrefix = String(firstId[...dashIdx])
-                        }
-                        for inst in instances {
-                            guard let id = inst["id"] as? String else { continue }
-                            // 不假设前缀——找第一个 "-" 后面的部分作为 PID
-                            let pidStr = id.split(separator: "-", maxSplits: 1).last.map(String.init) ?? id
-                            let key = pidToSidPrefix[pidStr] ?? pidStr
-                            if let tag = inst["tag"] as? String, !tag.isEmpty {
-                                scanner.hubTags[key] = tag
-                            }
-                            if let desc = inst["description"] as? String, !desc.isEmpty {
-                                scanner.hubDescs[key] = desc
-                            }
-                            if let fullSid = pidToFullSid[pidStr] {
-                                let isChannel = inst["isChannel"] as? Bool ?? false
-                                if let channels = inst["channels"] as? [String], !channels.isEmpty {
-                                    scanner.hubChannelSIDs.insert(fullSid)
-                                    scanner.hubChannelsBySID[fullSid] = channels
-                                } else if isChannel {
-                                    scanner.hubChannelSIDs.insert(fullSid)
-                                    scanner.hubChannelsBySID[fullSid] = ["all"]
-                                }
-                            }
+        if let json = hubJSON(path: "/instances") {
+            online = true
+            if let instances = json["instances"] as? [[String: Any]] {
+                // 从第一个 id 学 Hub 的 instance 前缀
+                if let firstId = instances.first?["id"] as? String,
+                   let dashIdx = firstId.firstIndex(of: "-") {
+                    instancePrefix = String(firstId[...dashIdx])
+                }
+                for inst in instances {
+                    guard let id = inst["id"] as? String else { continue }
+                    // 不假设前缀——找第一个 "-" 后面的部分作为 PID
+                    let pidStr = id.split(separator: "-", maxSplits: 1).last.map(String.init) ?? id
+                    let key = pidToSidPrefix[pidStr] ?? pidStr
+                    if let tag = inst["tag"] as? String, !tag.isEmpty {
+                        scanner.hubTags[key] = tag
+                    }
+                    if let desc = inst["description"] as? String, !desc.isEmpty {
+                        scanner.hubDescs[key] = desc
+                    }
+                    if let fullSid = pidToFullSid[pidStr] {
+                        let isChannel = inst["isChannel"] as? Bool ?? false
+                        if let channels = inst["channels"] as? [String], !channels.isEmpty {
+                            scanner.hubChannelSIDs.insert(fullSid)
+                            scanner.hubChannelsBySID[fullSid] = channels
+                        } else if isChannel {
+                            scanner.hubChannelSIDs.insert(fullSid)
+                            scanner.hubChannelsBySID[fullSid] = ["all"]
                         }
                     }
                 }
             }
-        } catch {
-            os_log("Hub instances API failed: %{public}@", log: log, type: .info, error.localizedDescription)
         }
         isHubOnline = online
         if online { isHubEverOnline = true }
@@ -166,26 +213,13 @@ class HubClient {
     // MARK: - Channel Data
 
     func fetchHubChannels() -> [ChannelMeta] {
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        task.arguments = curlArgs(["-s", "--connect-timeout", "2", "http://localhost:9900/channels"])
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let channels = json["channels"] as? [[String: Any]] {
-                return channels.compactMap { ch in
-                    guard let id = ch["id"] as? String, let name = ch["name"] as? String else { return nil }
-                    let aliases = ch["aliases"] as? [String] ?? []
-                    return ChannelMeta(id: id, name: name, aliases: aliases)
-                }
+        if let json = hubJSON(path: "/channels"),
+           let channels = json["channels"] as? [[String: Any]] {
+            return channels.compactMap { ch in
+                guard let id = ch["id"] as? String, let name = ch["name"] as? String else { return nil }
+                let aliases = ch["aliases"] as? [String] ?? []
+                return ChannelMeta(id: id, name: name, aliases: aliases)
             }
-        } catch {
-            os_log("Hub channels API failed: %{public}@", log: log, type: .info, error.localizedDescription)
         }
         return Self.defaultChannels.map { id in
             ChannelMeta(id: id, name: Self.defaultDisplayNames[id] ?? id, aliases: [])
@@ -194,24 +228,11 @@ class HubClient {
 
     func getUsedTags() -> Set<String> {
         var tags = Set<String>()
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        task.arguments = curlArgs(["-s", "--connect-timeout", "2", "http://localhost:9900/instances"])
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let instances = json["instances"] as? [[String: Any]] {
-                for inst in instances {
-                    if let tag = inst["tag"] as? String { tags.insert(tag.uppercased()) }
-                }
+        if let json = hubJSON(path: "/instances"),
+           let instances = json["instances"] as? [[String: Any]] {
+            for inst in instances {
+                if let tag = inst["tag"] as? String { tags.insert(tag.uppercased()) }
             }
-        } catch {
-            os_log("Hub getUsedTags failed: %{public}@", log: log, type: .info, error.localizedDescription)
         }
         return tags
     }
@@ -287,33 +308,17 @@ class HubClient {
 
     /// POST /set-tag。instanceId 用 `<prefix><PID>`（prefix 从 /instances 自动学到）。
     func setTag(instanceId: String, tag: String) {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let body: [String: Any] = ["instance": instanceId, "tag": tag]
-        let json = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        task.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/set-tag",
-                                   "-H", "Content-Type: application/json",
-                                   "-d", String(data: json, encoding: .utf8) ?? "{}"])
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        do { try task.run() } catch {
-            os_log("setTag failed: %{public}@", log: log, type: .error, error.localizedDescription)
+        if !hubPost(path: "/set-tag", body: body, timeout: 2.0) {
+            os_log("setTag failed", log: log, type: .error)
         }
     }
 
     /// POST /set-description。instanceId 用 `<prefix><PID>`。
     func setDescription(instanceId: String, description: String) {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let body: [String: Any] = ["instance": instanceId, "description": description]
-        let json = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        task.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/set-description",
-                                   "-H", "Content-Type: application/json",
-                                   "-d", String(data: json, encoding: .utf8) ?? "{}"])
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        do { try task.run() } catch {
-            os_log("setDescription failed: %{public}@", log: log, type: .error, error.localizedDescription)
+        if !hubPost(path: "/set-description", body: body, timeout: 2.0) {
+            os_log("setDescription failed", log: log, type: .error)
         }
     }
 
@@ -345,32 +350,14 @@ class HubClient {
             return false
         }
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let body: [String: Any] = ["channel": "homeland", "to": "local://operator", "path": sandboxedPath.path, "instance": instanceId]
-        let json = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        task.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/send-file",
-                                   "-H", "Content-Type: application/json",
-                                   "-d", String(data: json, encoding: .utf8) ?? "{}"])
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        do { try task.run(); task.waitUntilExit() } catch {
-            os_log("sendFile failed: %{public}@", log: log, type: .error, error.localizedDescription)
+        if !hubPost(path: "/send-file", body: body) {
+            os_log("sendFile failed", log: log, type: .error)
             return false
         }
-        if task.terminationStatus != 0 { return false }
 
-        let msgTask = Process()
-        msgTask.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         let msgBody: [String: Any] = ["content": "[文件] \(sandboxedPath.path)", "instance": instanceId]
-        let msgJson = (try? JSONSerialization.data(withJSONObject: msgBody)) ?? Data()
-        msgTask.arguments = curlArgs(["-s", "-X", "POST", "http://localhost:9900/homeland/send",
-                                      "-H", "Content-Type: application/json",
-                                      "-d", String(data: msgJson, encoding: .utf8) ?? "{}"])
-        msgTask.standardOutput = FileHandle.nullDevice
-        msgTask.standardError = FileHandle.nullDevice
-        do { try msgTask.run(); msgTask.waitUntilExit() } catch { return false }
-        return msgTask.terminationStatus == 0
+        return hubPost(path: "/homeland/send", body: msgBody)
     }
 
     /// 同步更新 identities 文件的 offline 副本。API 成功后调——保证 Hub 重启后状态不丢。

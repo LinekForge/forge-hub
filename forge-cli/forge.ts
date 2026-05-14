@@ -15,11 +15,13 @@ import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import {
   buildEngineLogEntry,
+  findExactEngineScheduleFile,
   findEngineRemoveMatches,
   formatLocalTimestamp,
   getEnginePaths,
   listEngineSchedules,
   updateEnginePauseConfig,
+  validateEngineRemoveQuery,
 } from "./engine.js";
 import {
   formatInstanceChannels,
@@ -1003,9 +1005,14 @@ function engineRemove(args: string[]) {
   }
 
   const query = args.join(" ");
-  const exactPath = path.join(engineScheduleDir, query);
-  if (fs.existsSync(exactPath)) {
-    fs.unlinkSync(exactPath);
+  const validation = validateEngineRemoveQuery(query);
+  if (!validation.ok) {
+    die(`非法任务名: ${validation.reason}`);
+  }
+
+  const exactFile = findExactEngineScheduleFile(engineScheduleDir, query);
+  if (exactFile) {
+    fs.unlinkSync(path.join(engineScheduleDir, exactFile));
     console.log(`已删除: ${query}`);
     return;
   }

@@ -75,7 +75,7 @@ const plugin: ChannelPlugin = {
 
           // 非主人处理——见 guide §4
           if (!isAllowed(senderId)) {
-            hub.logError(`⛔ 拒绝未授权: ${senderId}, 原文前 50: "${content.slice(0, 50)}"`);
+            hub.logError(`⛔ 拒绝未授权: ${senderId}`);
             hub.pushMessage({
               channel: "echo",
               from: "system",
