@@ -13,10 +13,15 @@ import { channelPlugins } from "./channel-registry.js";
 import { loadChannelState } from "./state.js";
 
 export function filterBySubscription(targets: string[], channel: string, targeted: boolean): string[] {
-  if (targeted) return targets; // @mention bypasses subscription
   const instances = getInstances();
+  if (targeted) {
+    // @mention / Dashboard targets bypass channel subscriptions, but not the
+    // channel-mode gate. Tool-only instances must never receive inbound pushes.
+    return targets.filter((id) => instances.get(id)?.isChannel !== false);
+  }
   return targets.filter((id) => {
     const inst = instances.get(id);
+    if (inst?.isChannel === false) return false;
     if (!inst?.channels) return true; // undefined = listen to all
     return inst.channels.includes(channel);
   });

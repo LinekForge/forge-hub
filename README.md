@@ -99,6 +99,8 @@ claude --dangerously-load-development-channels server:hub
 > ```
 >
 > 把 `approval_channels` 换成你已配置 owner 的通道。详见 [配置.md §审批推送配置](配置.md)。
+>
+> Dashboard 的审批队列显示的是已经成功登记的 pending 审批；它不是 `approval_channels` 的替代入口。外部审批通道推送成功后，Dashboard 才会同步看到这条审批并可在本机处理。
 
 > [!NOTE]
 > **首次调用 `hub_reply` / `hub_send_file` 等 MCP 工具时 Claude Code 会弹审批**——属于 CC 默认的 MCP tool approval 行为，不是 forge-hub 的设计。approve 一次，或在 CC 里 `/allowed-tools` 添加 `mcp__hub__hub_reply` / `mcp__hub__hub_send_file` / `mcp__hub__hub_send_voice` 到全局允许列表，之后就不再弹。

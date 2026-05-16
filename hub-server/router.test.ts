@@ -1,9 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
+import { getInstances } from "./instance-manager.js";
+import { filterBySubscription } from "./resolve.js";
 import { route } from "./router.js";
 import type { ConnectedInstance, HubConfig, InboundMessage } from "./types.js";
 
-function makeInstance(id: string, tag?: string): ConnectedInstance {
+function makeInstance(id: string, tag?: string, overrides: Partial<ConnectedInstance> = {}): ConnectedInstance {
   return {
     id,
     tag,
@@ -11,6 +13,7 @@ function makeInstance(id: string, tag?: string): ConnectedInstance {
     ws: {} as ConnectedInstance["ws"],
     send() { return 1; },
     close() {},
+    ...overrides,
   };
 }
 
@@ -20,6 +23,10 @@ const baseConfig: HubConfig = {
   primary_instance: "",
   show_instance_tag: true,
 };
+
+afterEach(() => {
+  getInstances().clear();
+});
 
 function makeMessage(content: string): InboundMessage {
   return {
@@ -154,5 +161,39 @@ describe("router", () => {
       targeted: false,
       content: "please handle this",
     });
+  });
+
+  test("delivery filter excludes tool-only instances from broadcast routes", () => {
+    const instances = new Map<string, ConnectedInstance>([
+      ["channel-1", makeInstance("channel-1", "ops", { isChannel: true })],
+      ["tool-1", makeInstance("tool-1", "tool", { isChannel: false })],
+    ]);
+    getInstances().clear();
+    for (const [id, instance] of instances) getInstances().set(id, instance);
+
+    const result = route(makeMessage("please handle this"), instances, baseConfig);
+    const filtered = filterBySubscription(result.targets, "wechat", result.targeted);
+
+    expect(result.targets).toEqual(["channel-1", "tool-1"]);
+    expect(filtered).toEqual(["channel-1"]);
+  });
+
+  test("delivery filter excludes tool-only instances from targeted routes", () => {
+    const instances = new Map<string, ConnectedInstance>([
+      ["channel-1", makeInstance("channel-1", "ops", { isChannel: true })],
+      ["tool-1", makeInstance("tool-1", "tool", { isChannel: false })],
+    ]);
+    getInstances().clear();
+    for (const [id, instance] of instances) getInstances().set(id, instance);
+
+    const result = route(makeMessage("please @tool handle this"), instances, baseConfig);
+    const filtered = filterBySubscription(result.targets, "wechat", result.targeted);
+
+    expect(result).toEqual({
+      targets: ["tool-1"],
+      targeted: true,
+      content: "please handle this",
+    });
+    expect(filtered).toEqual([]);
   });
 });
