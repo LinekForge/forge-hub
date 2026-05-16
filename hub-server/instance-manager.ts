@@ -159,7 +159,7 @@ export function handleWsOpen(ws: ServerWebSocket<WsData>): void {
 
   const instance: ConnectedInstance = {
     id: instanceId,
-    isChannel: true,
+    isChannel: false,
     connectedAt: new Date().toISOString(),
     ws,
     send(event: HubEvent) {
@@ -189,7 +189,7 @@ export function handleWsOpen(ws: ServerWebSocket<WsData>): void {
     tag: instance.tag,
     description: instance.description,
     channels: instance.channels,
-    isChannel: true,
+    isChannel: false,
     lastSeenAt: instance.connectedAt,
   });
   const tagInfo = instance.tag ? ` @${instance.tag}` : "";
@@ -206,6 +206,12 @@ export function handleWsMessage(ws: ServerWebSocket<WsData>, raw: string | Buffe
     const msg = JSON.parse(typeof raw === "string" ? raw : raw.toString()) as WsClientMessage;
 
     if (msg.type === "ready") {
+      const instance = instances.get(instanceId);
+      if (instance) {
+        // ?? true: 旧版 client 不发 isChannel，但连了 WS 就是 channel 模式
+        instance.isChannel = msg.isChannel ?? true;
+        saveIdentity(instanceId, { isChannel: instance.isChannel });
+      }
       // Only apply ready values if Hub doesn't already have a saved value
       // (user may have renamed via menubar — don't overwrite)
       const saved = loadSavedIdentities()[instanceId];
@@ -231,7 +237,7 @@ export function handleWsClose(ws: ServerWebSocket<WsData>): void {
     tag: instance.tag,
     description: instance.description,
     channels: instance.channels,
-    isChannel: instance.isChannel ?? true,
+    isChannel: instance.isChannel ?? false,
     lastSeenAt: new Date().toISOString(),
   });
   instances.delete(instanceId);
@@ -343,7 +349,7 @@ export function setInstanceChannels(instanceId: string, channels: string[] | und
   const instance = instances.get(instanceId);
   if (instance) {
     instance.channels = channels;
-    saveIdentity(instanceId, { channels, isChannel: true });
+    saveIdentity(instanceId, { channels, isChannel: instance.isChannel ?? false });
     const label = channels ? channels.join(", ") : "all";
     log(`📡 通道订阅: ${instanceId} → [${label}]`);
     return true;

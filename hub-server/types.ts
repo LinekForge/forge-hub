@@ -286,7 +286,7 @@ export interface WsData {
 
 /** Client → Hub（WebSocket 消息） */
 export type WsClientMessage =
-  | { type: "ready"; tag?: string; description?: string; channels?: string[]; history?: Record<string, number> };
+  | { type: "ready"; tag?: string; description?: string; channels?: string[]; history?: Record<string, number>; isChannel?: boolean };
 
 /** Hub → 实例的实时事件 */
 export interface HubEvent {

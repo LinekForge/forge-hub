@@ -7,10 +7,10 @@ export interface SessionConfig {
   channels?: string[];
   history?: Record<string, number>;
   /**
-   * Distinguishes "listen to all channels" from tool mode.
-   * When a restored channel session subscribes to all channels, `channels`
-   * is intentionally `undefined`, so we need an explicit bit to avoid
-   * misclassifying it as tool mode on restart.
+   * Distinguishes channel mode (receives messages via WebSocket) from tool mode (send only).
+   * Set by next-session.json (launcher) or inferred from channels array.
+   * NOT restored from crash recovery — isChannel is per-session, determined by CC's
+   * --dangerously-load-development-channels flag, not by historical identity records.
    */
   isChannel?: boolean;
 }
@@ -122,17 +122,17 @@ export function readAndClearSessionConfig(
     logError(`session config layer 2 (legacy next-name.txt) 读失败: ${String(err)}`);
   }
 
-  // 3. Crash recovery for channel sessions
+  // 3. Crash recovery — restore tag/description but NOT isChannel.
+  // isChannel 由 CC 的 --dangerously-load-development-channels flag 决定（per-session），
+  // 不应从历史记录继承——否则 PID 重用会让 tools 窗口误进 channel 模式。
   try {
     if (fs.existsSync(paths.identitiesFile)) {
       const all = JSON.parse(fs.readFileSync(paths.identitiesFile, "utf-8")) as Record<string, Record<string, unknown>>;
       const saved = all[instanceId];
-      if (saved?.isChannel) {
+      if (saved && (typeof saved.tag === "string" || typeof saved.description === "string")) {
         return {
           tag: typeof saved.tag === "string" ? saved.tag : undefined,
           description: typeof saved.description === "string" ? saved.description : undefined,
-          channels: normalizeChannels(saved.channels),
-          isChannel: true,
         };
       }
     }

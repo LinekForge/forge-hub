@@ -488,7 +488,7 @@ async function connectWebSocket(): Promise<void> {
       mcpReady = true;
 
       // Build ready message from session config
-      const readyMsg: Record<string, unknown> = { type: "ready" };
+      const readyMsg: Record<string, unknown> = { type: "ready", isChannel: true };
       if (SESSION_CONFIG) {
         if (SESSION_CONFIG.tag) readyMsg.tag = SESSION_CONFIG.tag;
         if (SESSION_CONFIG.description) readyMsg.description = SESSION_CONFIG.description;

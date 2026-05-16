@@ -59,7 +59,7 @@ describe("hub client session config", () => {
     expect(fs.existsSync(paths.legacyNameFile)).toBe(false);
   });
 
-  test("restores all-channel sessions from instance identities without downgrading to tool mode", () => {
+  test("crash recovery restores tag/description but NOT isChannel from identities", () => {
     const hubDir = mkHubDir();
     const paths = getSessionConfigPaths(hubDir);
     fs.mkdirSync(path.dirname(paths.identitiesFile), { recursive: true });
@@ -68,6 +68,7 @@ describe("hub client session config", () => {
       JSON.stringify({
         "forge-123": {
           description: "Recovered session",
+          tag: "ops",
           isChannel: true,
         },
       }),
@@ -77,7 +78,7 @@ describe("hub client session config", () => {
     const config = readAndClearSessionConfig(paths, "forge-123", () => {});
 
     expect(config?.description).toBe("Recovered session");
-    expect(config?.channels).toBeUndefined();
-    expect(isChannelMode(config)).toBe(true);
+    expect(config?.tag).toBe("ops");
+    expect(isChannelMode(config)).toBe(false);
   });
 });
