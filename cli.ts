@@ -50,6 +50,7 @@ export const HUB_INSTALL_PRESERVE_ENTRIES = [
   "security-events.jsonl",
   "audit.jsonl",
   "engine-data",
+  "source",
   "hub-client.log",
   ".DS_Store",
 ];
