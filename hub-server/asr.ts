@@ -89,6 +89,6 @@ async function runAsrHook(channel: string, audioPath: string): Promise<string | 
     logError(`[asr] hook 执行失败 (hook=${ASR_HOOK} channel=${channel}): ${String(err)}`);
     return null;
   } finally {
-    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* cleanup best-effort */ }
   }
 }

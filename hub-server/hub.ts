@@ -661,6 +661,7 @@ async function main() {
     log(`收到 ${signal}，正常关闭`);
     log(`运行 ${uptime}s · 收 ${totalIn} 条 · 发 ${totalOut} 条`);
     log("────────────────────────────────────────");
+    if (configReloadDebounce) clearTimeout(configReloadDebounce);
     await stopAllChannels();
     securityAggregator.flushAndStop();
     closeSearch();

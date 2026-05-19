@@ -33,7 +33,7 @@ export function initQueue(): void {
     db.exec("CREATE INDEX IF NOT EXISTS idx_pending_channel ON pending(channel)");
     db.run("DELETE FROM pending WHERE created_at < datetime('now', '-24 hours')");
     for (const suffix of ["", "-wal", "-shm"]) {
-      try { fs.chmodSync(DB_PATH + suffix, 0o600); } catch {}
+      try { fs.chmodSync(DB_PATH + suffix, 0o600); } catch { /* chmod best-effort */ }
     }
     const count = (db.prepare("SELECT COUNT(*) as n FROM pending").get() as { n: number }).n;
     if (count > 0) log(`📬 消息队列: ${count} 条待投递`);

@@ -177,7 +177,7 @@ export function handleWsOpen(ws: ServerWebSocket<WsData>): void {
       }
     },
     close() {
-      try { ws.close(); } catch {}
+      try { ws.close(); } catch { /* already closed */ }
     },
   };
 

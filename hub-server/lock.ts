@@ -89,7 +89,7 @@ export function triggerLock(by: string): void {
   // macOS notification
   try {
     execFileSync("/usr/bin/osascript", ["-e", 'display notification "所有远程通道已关闭" with title "🔒 Hub 已锁定"']);
-  } catch {}
+  } catch { /* notification best-effort */ }
 }
 
 export function triggerUnlock(): void {
@@ -110,5 +110,5 @@ export function triggerUnlock(): void {
   // macOS notification
   try {
     execFileSync("/usr/bin/osascript", ["-e", 'display notification "远程通道已恢复" with title "🔓 Hub 已解锁"']);
-  } catch {}
+  } catch { /* notification best-effort */ }
 }

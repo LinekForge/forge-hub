@@ -63,7 +63,7 @@ function startTyping(senderId: string, contextToken: string): void {
       await sendTyping(baseUrl, token, senderId, ticket, TYPING_STATUS_TYPING);
       const timer = setTimeout(async () => {
         typingState.delete(senderId);
-        try { await sendTyping(baseUrl, token, senderId, ticket, TYPING_STATUS_CANCEL); } catch {}
+        try { await sendTyping(baseUrl, token, senderId, ticket, TYPING_STATUS_CANCEL); } catch { /* best-effort */ }
       }, TYPING_AUTO_CANCEL_MS);
       typingState.set(senderId, { ticket, timer });
     } catch (err) { hub?.logError(`typing 指示器失败: ${String(err)}`); }
@@ -90,7 +90,7 @@ async function handleTypingBeforeSend(senderId: string, contextToken: string): P
         const ticket = cfg.typing_ticket;
         return () => { sendTyping(baseUrl, token, senderId, ticket, TYPING_STATUS_CANCEL).catch(() => {}); };
       }
-    } catch {}
+    } catch { /* best-effort */ }
     return () => {};
   }
 }

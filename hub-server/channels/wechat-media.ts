@@ -365,6 +365,6 @@ export async function sendTtsAsMp3File(
     // uploadAndSendMedia 按 mime 自动把 mp3 判成 itemType=4 file，发成文件附件
     await uploadAndSendMedia(baseUrl, token, to, mp3Path, contextToken, mediaDir);
   } finally {
-    try { await fs.promises.unlink(mp3Path); } catch {}
+    try { await fs.promises.unlink(mp3Path); } catch { /* cleanup best-effort */ }
   }
 }

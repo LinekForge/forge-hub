@@ -63,7 +63,7 @@ export function shouldRejectUntrustedBrowserOrigin(req: Request, url: URL, route
 function resolveDashboardDir(): string | null {
   for (const candidate of DASHBOARD_DIR_CANDIDATES) {
     const root = path.resolve(candidate);
-    try { if (fs.existsSync(path.join(root, "index.html"))) return root; } catch {}
+    try { if (fs.existsSync(path.join(root, "index.html"))) return root; } catch { /* best-effort */ }
   }
   return null;
 }
@@ -77,7 +77,7 @@ function resolveDashboardStaticFile(pathname: string): string | null {
   const filePath = path.resolve(dashboardDir, normalizedRelative);
   const dashboardRoot = path.resolve(dashboardDir);
   if (!filePath.startsWith(dashboardRoot + path.sep) && filePath !== dashboardRoot) return null;
-  try { if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) return filePath; } catch {}
+  try { if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) return filePath; } catch { /* best-effort */ }
   return null;
 }
 

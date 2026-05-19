@@ -77,7 +77,7 @@ const homeland: ChannelPlugin = {
 
   async stop(): Promise<void> {
     for (const client of sseClients) {
-      try { client.controller.close(); } catch {}
+      try { client.controller.close(); } catch { /* already closed */ }
     }
     sseClients.clear();
     hub = null;

@@ -393,7 +393,7 @@ const plugin: ChannelPlugin = {
   async stop() {
     if (pollTimer) clearInterval(pollTimer);
     if (db) {
-      try { db.close(); } catch {}
+      try { db.close(); } catch { /* already closed */ }
     }
     hub.log("iMessage 通道已停止");
   },

@@ -29,7 +29,7 @@ function resolveLarkCli(): string {
   try {
     const out = execFileSync("/usr/bin/which", ["lark-cli"], { encoding: "utf-8" }).trim();
     if (out) return out;
-  } catch {}
+  } catch { /* command may not exist */ }
   return "/opt/homebrew/lib/node_modules/@larksuite/cli/bin/lark-cli"; // Apple-Silicon default
 }
 const LARK_CLI = resolveLarkCli();
@@ -49,7 +49,7 @@ function pgrepLarkEvent(): string | null {
   try {
     const out = execFileSync("/usr/bin/pgrep", ["-f", LARK_EVENT_PATTERN], { encoding: "utf-8" }).trim();
     return out || null;
-  } catch {
+  } catch { /* command may not exist */
     return null; // exit 1 = no match
   }
 }
@@ -58,7 +58,7 @@ function pkillLarkEvent(signal?: string): void {
   try {
     const args = signal ? [signal, "-f", LARK_EVENT_PATTERN] : ["-f", LARK_EVENT_PATTERN];
     execFileSync("/usr/bin/pkill", args);
-  } catch {}
+  } catch { /* command may not exist */ }
 }
 
 async function cleanupStaleLarkCli(): Promise<void> {

@@ -56,7 +56,7 @@ export function initSearch(enabled: boolean): void {
     `);
     // WAL/SHM 文件权限跟随 db 文件，防止 umask 宽松时泄漏
     for (const suffix of ["", "-wal", "-shm"]) {
-      try { fs.chmodSync(DB_PATH + suffix, 0o600); } catch {}
+      try { fs.chmodSync(DB_PATH + suffix, 0o600); } catch { /* chmod best-effort */ }
     }
   } catch (err) {
     logError(`search index 初始化失败: ${String(err)}`);

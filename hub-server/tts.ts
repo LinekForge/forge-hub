@@ -61,24 +61,24 @@ export async function synthesizeToOgg(text: string): Promise<string | null> {
       await fs.promises.access(mp3, fs.constants.F_OK);
     } catch {
       logError(`TTS hook 返回成功但 mp3 文件未生成: ${TTS_HOOK}`);
-      try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
+      try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* cleanup best-effort */ }
       return null;
     }
     await execFileText(ffmpeg, ["-y", "-i", mp3, "-c:a", "libopus", "-b:a", "64k", ogg], { timeout: 10000 });
-    try { await fs.promises.unlink(mp3); } catch {}
+    try { await fs.promises.unlink(mp3); } catch { /* cleanup best-effort */ }
     try {
       await fs.promises.access(ogg, fs.constants.F_OK);
     } catch {
       // ffmpeg exit 0 但 ogg 文件未生成（罕见；codec 错误 / 磁盘满 / 权限等）。
       // 不打 log 的话上游只看到"TTS 合成失败"泛指——debug 无 evidence。
       logError(`ffmpeg 退出成功但 ogg 未生成: ffmpeg=${ffmpeg}, mp3=${mp3}, ogg=${ogg}`);
-      try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
+      try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* cleanup best-effort */ }
       return null;
     }
     return ogg;
   } catch (err) {
     logError(`TTS 合成失败 (hook=${TTS_HOOK}, ffmpeg=${ffmpeg}): ${String(err)}`);
-    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch {}
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* cleanup best-effort */ }
     return null;
   }
 }

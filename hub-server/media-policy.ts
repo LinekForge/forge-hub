@@ -85,7 +85,7 @@ export async function responseToBufferWithMediaLimit(
     if (!value) continue;
     total += value.byteLength;
     if (total > maxBytes) {
-      try { await reader.cancel(); } catch {}
+      try { await reader.cancel(); } catch { /* already closed */ }
       throw new MediaSizeLimitError(label, total, maxBytes);
     }
     chunks.push(Buffer.from(value));
@@ -121,7 +121,7 @@ export async function writeResponseToFileWithMediaLimit(
       if (!value) continue;
       total += value.byteLength;
       if (total > maxBytes) {
-        try { await reader.cancel(); } catch {}
+        try { await reader.cancel(); } catch { /* already closed */ }
         throw new MediaSizeLimitError(label, total, maxBytes);
       }
       await handle.write(value);

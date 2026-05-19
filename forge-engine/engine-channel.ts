@@ -56,11 +56,11 @@ function cleanOrphans(): void {
       try {
         process.kill(pid, "SIGTERM");
         cleaned++;
-      } catch {}
+      } catch { /* best-effort */ }
     }
 
     if (cleaned > 0) log(`🧹 清理 ${cleaned} 个孤儿进程`);
-  } catch {}
+  } catch { /* best-effort */ }
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────

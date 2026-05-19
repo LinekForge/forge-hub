@@ -278,7 +278,7 @@ function rotateTriggerLogIfNeeded(): void {
       const from = i === 1 ? ACTION_LOG_FILE : `${ACTION_LOG_FILE}.${i - 1}`;
       const to = `${ACTION_LOG_FILE}.${i}`;
       if (i === TRIGGER_LOG_KEEP) {
-        try { fs.unlinkSync(to); } catch {}
+        try { fs.unlinkSync(to); } catch { /* cleanup best-effort */ }
       }
       try {
         fs.renameSync(from, to);

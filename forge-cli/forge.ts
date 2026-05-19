@@ -81,7 +81,7 @@ function writeSensitiveJsonFile(filePath: string, value: unknown): void {
     fs.renameSync(tmpPath, filePath);
     fs.chmodSync(filePath, 0o600);
   } catch (err) {
-    try { fs.rmSync(tmpPath, { force: true }); } catch {}
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* cleanup best-effort */ }
     throw err;
   }
 }
@@ -369,7 +369,7 @@ async function hubApprovalAudit(args: string[]) {
       if (todayOnly && !e.ts.startsWith(today)) continue;
       if (filterRequestId && e.request_id !== filterRequestId) continue;
       entries.push(e);
-    } catch {}
+    } catch { /* skip malformed */ }
   }
   const tail = entries.slice(-limit);
   if (tail.length === 0) {
@@ -938,7 +938,7 @@ const PRESETS_FILE = path.join(process.env.HOME ?? "~", ".forge-hub", "channel-p
 function loadPresetsData(): { name: string; subscribe?: string[]; history: Record<string, number> }[] {
   try {
     if (fs.existsSync(PRESETS_FILE)) return JSON.parse(fs.readFileSync(PRESETS_FILE, "utf-8"));
-  } catch {}
+  } catch { /* skip malformed */ }
   return [];
 }
 
@@ -1312,7 +1312,7 @@ async function hubPs(): Promise<void> {
         }
       }
     }
-  } catch {}
+  } catch { /* best-effort */ }
 
   // 3. 从 Hub API 拿在线实例
   let hubInstances: { id: string; channels?: string[]; description?: string; presence?: string }[] = [];
