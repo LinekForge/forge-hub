@@ -443,6 +443,11 @@ export function dismissApprovalFromDashboard(requestId: string): ResolveResult {
     return { ok: false, error: "pending not found", status: 404 };
   }
 
+  // Send deny to CC so it doesn't hang waiting for a response
+  sendPendingApprovalResponse(requestId, pending, "deny", {
+    channel: "homeland", from: "Dashboard", fromId: "local://dashboard",
+  });
+
   clearPendingApproval(requestId, pending);
 
   appendAudit({

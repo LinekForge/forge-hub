@@ -123,13 +123,21 @@ function installCmd(): void {
 
   // 4. Install dependencies
   log("⏳ 安装依赖（bun install）...");
-  execFileSync(bunPath, ["install"], { cwd: HUB_DIR, stdio: "inherit" });
-  execFileSync(bunPath, ["install"], { cwd: HUB_CLIENT_RUNTIME, stdio: "inherit" });
-  execFileSync(bunPath, ["install"], { cwd: HUB_DASHBOARD_RUNTIME, stdio: "inherit" });
+  try {
+    execFileSync(bunPath, ["install"], { cwd: HUB_DIR, stdio: "inherit" });
+    execFileSync(bunPath, ["install"], { cwd: HUB_CLIENT_RUNTIME, stdio: "inherit" });
+    execFileSync(bunPath, ["install"], { cwd: HUB_DASHBOARD_RUNTIME, stdio: "inherit" });
+  } catch (err) {
+    die(`依赖安装失败: ${String(err)}\n部署未完成——运行时文件已复制但依赖未装。请手动在 ${HUB_DIR}、${HUB_CLIENT_RUNTIME}、${HUB_DASHBOARD_RUNTIME} 运行 bun install 后重试。`);
+  }
   log("✓ 依赖装好");
 
   log("⏳ 构建 dashboard...");
-  execFileSync(bunPath, ["run", "build"], { cwd: HUB_DASHBOARD_RUNTIME, stdio: "inherit" });
+  try {
+    execFileSync(bunPath, ["run", "build"], { cwd: HUB_DASHBOARD_RUNTIME, stdio: "inherit" });
+  } catch (err) {
+    die(`Dashboard 构建失败: ${String(err)}\n依赖已装，但 dashboard 未构建。请手动在 ${HUB_DASHBOARD_RUNTIME} 运行 bun run build。`);
+  }
   log("✓ hub-dashboard dist 已构建");
 
   // 5. Write launchd plist (Mac only)

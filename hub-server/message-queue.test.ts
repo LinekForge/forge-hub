@@ -3,7 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { HUB_DIR } from "./config.js";
-import { initQueue, enqueue, drain, dequeue, queueSize, closeQueue } from "./message-queue.js";
+import { initQueue, enqueue, drain as _drain, dequeue, queueSize, closeQueue } from "./message-queue.js";
+
+function drain(channels: string[], limit?: number) {
+  const result = _drain(channels, limit);
+  if (result === null) throw new Error("drain returned null — unexpected in test");
+  return result;
+}
 
 const DB_PATH = path.join(HUB_DIR, "queue.db");
 

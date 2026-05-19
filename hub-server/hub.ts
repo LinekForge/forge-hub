@@ -599,7 +599,9 @@ async function main() {
       if (instance.isChannel !== false) {
         const subscribedChannels = instance.channels ?? [...channelPlugins.keys()];
         const queued = drain(subscribedChannels);
-        if (queued.length > 0) {
+        if (queued === null) {
+          logError(`⚠ 消息队列 drain 失败（${instanceId}），排队消息未投递，将在下次重连重试`);
+        } else if (queued.length > 0) {
           const delivered: number[] = [];
           for (const m of queued) {
             const status = instance.ws.send(JSON.stringify(m.payload));

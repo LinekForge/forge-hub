@@ -64,7 +64,7 @@ export interface QueuedMessage {
   payload: Record<string, unknown>;
 }
 
-export function drain(channels: string[], limit = 50): QueuedMessage[] {
+export function drain(channels: string[], limit = 50): QueuedMessage[] | null {
   if (!db || channels.length === 0) return [];
   try {
     const placeholders = channels.map(() => "?").join(",");
@@ -74,7 +74,7 @@ export function drain(channels: string[], limit = 50): QueuedMessage[] {
     return rows.map(r => ({ id: r.id, channel: r.channel, payload: JSON.parse(r.payload) as Record<string, unknown> }));
   } catch (err) {
     logError(`消息出队失败: ${String(err)}`);
-    return [];
+    return null;
   }
 }
 
