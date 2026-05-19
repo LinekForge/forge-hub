@@ -21,7 +21,7 @@ describe("execFileText", () => {
 
   test("respects cwd option", async () => {
     const result = await execFileText("pwd", [], { cwd: "/tmp" });
-    expect(result.trim()).toBe("/private/tmp");
+    expect(["/tmp", "/private/tmp"]).toContain(result.trim());
   });
 
   test("respects env option", async () => {
@@ -68,7 +68,7 @@ describe("spawnText", () => {
 
   test("respects cwd option", async () => {
     const { stdout } = await spawnText("pwd", [], { cwd: "/tmp" });
-    expect(stdout.trim()).toBe("/private/tmp");
+    expect(["/tmp", "/private/tmp"]).toContain(stdout.trim());
   });
 
   test("respects env option", async () => {
