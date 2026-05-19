@@ -249,6 +249,10 @@ fh engine remove <q|file>  # 删除任务
 fh engine log --read 20    # 查看行动日志
 
 forge-hub install / uninstall / doctor
+
+# 更多：fh hub --help 查看全部 30+ 子命令
+# 包括 allow/revoke/owner/allowlist/listen/name/summary/
+# replay/send/ps/security/approval-audit/preset/setup 等
 ```
 
 </details>
