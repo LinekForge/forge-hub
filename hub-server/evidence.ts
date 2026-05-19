@@ -51,23 +51,29 @@ export function encodeRawUpdate(rawJson: string): string {
 
 let cachedLastHash: string | null = null;
 
-function readLastHashFromJSONL(): string | null {
-  if (cachedLastHash !== null) return cachedLastHash;
+function scanJSONLReverse<T>(filePath: string, predicate: (record: Record<string, unknown>) => T | undefined): T | null {
   try {
-    const filePath = currentMonthFile();
     if (!fs.existsSync(filePath)) return null;
-    const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.trimEnd().split("\n");
+    const lines = fs.readFileSync(filePath, "utf-8").trimEnd().split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
       if (!line) continue;
       try {
-        const record = JSON.parse(line) as { entry_hash?: string };
-        if (record.entry_hash) return record.entry_hash;
-      } catch { /* skip malformed line, try previous */ }
+        const record = JSON.parse(line) as Record<string, unknown>;
+        const result = predicate(record);
+        if (result !== undefined) return result;
+      } catch { /* skip malformed line */ }
     }
   } catch { /* file not readable */ }
   return null;
+}
+
+function readLastHashFromJSONL(): string | null {
+  if (cachedLastHash !== null) return cachedLastHash;
+  return scanJSONLReverse(currentMonthFile(), (r) => {
+    if (typeof r.entry_hash === "string") return r.entry_hash;
+    return undefined;
+  });
 }
 
 // ── Dedup ──────────────────────────────────────────────────────────────────
@@ -151,20 +157,10 @@ export function appendEvidence(input: AppendInput): EvidenceRecord {
 }
 
 function findExistingRecord(channel: string, updateId: string): EvidenceRecord | null {
-  try {
-    const filePath = currentMonthFile();
-    if (!fs.existsSync(filePath)) return null;
-    const lines = fs.readFileSync(filePath, "utf-8").split("\n");
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      try {
-        const record = JSON.parse(line) as EvidenceRecord;
-        if (record.channel === channel && record.update_id === updateId) return record;
-      } catch { /* skip malformed lines */ }
-    }
-  } catch { /* file not readable — fall through */ }
-  return null;
+  return scanJSONLReverse(currentMonthFile(), (r) => {
+    if (r.channel === channel && r.update_id === updateId) return r as unknown as EvidenceRecord;
+    return undefined;
+  });
 }
 
 function buildAndWrite(input: AppendInput, key: string): EvidenceRecord {

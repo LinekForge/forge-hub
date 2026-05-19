@@ -394,6 +394,7 @@ const plugin: ChannelPlugin = {
 
   async stop() {
     if (pollTimer) clearInterval(pollTimer);
+    readyReported = false;
     if (db) {
       try { db.close(); } catch { /* already closed */ }
     }
