@@ -444,9 +444,12 @@ export function dismissApprovalFromDashboard(requestId: string): ResolveResult {
   }
 
   // Send deny to CC so it doesn't hang waiting for a response
-  sendPendingApprovalResponse(requestId, pending, "deny", {
+  const delivery = sendPendingApprovalResponse(requestId, pending, "deny", {
     channel: "homeland", from: "Dashboard", fromId: "local://dashboard",
   });
+  if (!delivery.ok) {
+    log(`⚠ dismiss ${requestId}: deny 未送达 (${delivery.reason})，CC 实例将等到 TTL 超时`);
+  }
 
   clearPendingApproval(requestId, pending);
 
