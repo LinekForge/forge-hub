@@ -96,7 +96,10 @@ function installCmd(): void {
   cleanDirContents(HUB_DIR, new Set(HUB_INSTALL_PRESERVE_ENTRIES));
   cleanDirContents(CHANNELS_RUNTIME);
   const serverSrc = path.join(packageRoot, "hub-server");
-  cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"]);
+  // 递归拷 hub-server（含 routes/ 及未来任何子目录）——非递归 cpDir 会静默跳过
+  // routes/，导致 endpoints.ts import './routes/health.js' 时 100% 崩（#35）。
+  // channels/ 单独走下面的 clean + chmod 700 路径，故这里排除避免重复拷。
+  copyFilteredTree(serverSrc, HUB_DIR, [".ts", ".json", ".lock"], new Set(["channels"]));
   cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
   // Security (redteam B3): chmod 700 CHANNELS_RUNTIME——防其他 user-level 进程
   // 写入恶意 plugin。fs.watch 已默认关闭（hub-server/channel-loader.ts），
@@ -313,8 +316,10 @@ function syncCmd(): void {
   const serverSrc = path.join(packageRoot, "hub-server");
 
   // 2. Copy hub-server .ts/.json/.lock files to runtime
-  //    SYNC_SKIP 防止 hub-server/ 下未来若出现同名 .json 静默覆盖用户运行时配置（hub-config.json 等）。
-  cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"], SYNC_SKIP);
+  //    递归拷（含 routes/ 及未来任何子目录）——非递归会漏 routes/ 致 Hub 启动崩（#35）。
+  //    SYNC_SKIP 防止 hub-server/ 下同名 .json 静默覆盖用户运行时配置（hub-config.json 等）；
+  //    channels/ 单独 clean + 拷，故一并排除。
+  copyFilteredTree(serverSrc, HUB_DIR, [".ts", ".json", ".lock"], new Set([...SYNC_SKIP, "channels"]));
   cleanDirContents(CHANNELS_RUNTIME);
   cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
 
@@ -445,6 +450,9 @@ async function doctorCmd(): Promise<void> {
 
   check("Bun installed", which("bun") !== null, "https://bun.sh");
   check("Hub server runtime", fs.existsSync(path.join(HUB_DIR, "hub.ts")), "跑 forge-hub install");
+  // routes/ 是 endpoints.ts 启动时 import 的子目录，漏拷则 Hub 100% 崩（#35）。
+  // 单独校验避免 install/sync 漏拷后 doctor 仍报 All checks passed。
+  check("Hub routes/ deployed", fs.existsSync(path.join(HUB_DIR, "routes", "health.ts")), "routes/ 漏拷——跑 forge-hub install/sync 重新部署");
   check("Hub client runtime", fs.existsSync(path.join(HUB_CLIENT_RUNTIME, "hub-channel.ts")), "跑 forge-hub install");
   check("LaunchAgent plist", os.platform() !== "darwin" || fs.existsSync(LAUNCHD_PLIST), "Mac 上跑 forge-hub install");
   check("MCP registered", isMcpRegistered(), "Hub channel 没在 ~/.claude.json");
@@ -524,15 +532,16 @@ export function cleanDirContents(dir: string, preserve = new Set<string>()): voi
   }
 }
 
-function copyFilteredTree(src: string, dst: string, exts: string[]): void {
+function copyFilteredTree(src: string, dst: string, exts: string[], skipNames = new Set<string>()): void {
   if (!fs.existsSync(src)) die(`source 不存在: ${src}`);
   fs.mkdirSync(dst, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue;
+    if (skipNames.has(entry.name)) continue;
     const sp = path.join(src, entry.name);
     const dp = path.join(dst, entry.name);
     if (entry.isDirectory()) {
-      copyFilteredTree(sp, dp, exts);
+      copyFilteredTree(sp, dp, exts, skipNames);
       continue;
     }
     if (entry.isFile() && exts.some((ext) => entry.name.endsWith(ext))) {
