@@ -535,7 +535,7 @@ function copyFilteredTree(src: string, dst: string, exts: string[], skipNames = 
     const sp = path.join(src, entry.name);
     const dp = path.join(dst, entry.name);
     if (entry.isDirectory()) {
-      copyFilteredTree(sp, dp, exts);
+      copyFilteredTree(sp, dp, exts, skipNames);
       continue;
     }
     if (entry.isFile() && exts.some((ext) => entry.name.endsWith(ext))) {

@@ -698,7 +698,7 @@ main().catch(async (err) => {
   logError(`Fatal: ${msg}`);
   await drainQueuedWrites();
   // 端口被占时 exit(0)——KeepAlive 不会立刻重拉，避免崩溃风暴
-  if (msg.includes("EADDRINUSE") || (msg.includes("port") && msg.includes("in use"))) {
+  if (msg.includes("EADDRINUSE") || msg.includes("address already in use") || (msg.includes("port") && msg.includes("in use"))) {
     logError("另一个 Hub 实例可能正在运行。launchd 不会自动重试。");
     process.exit(0);
   }
