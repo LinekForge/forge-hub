@@ -759,6 +759,7 @@ async function touchIdVerify(reason: string): Promise<boolean> {
       return answer === "y" || answer === "yes";
     } finally {
       rl.close();
+      process.stdin.destroy();
     }
   }
 
