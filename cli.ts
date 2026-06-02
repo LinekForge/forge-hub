@@ -96,7 +96,7 @@ function installCmd(): void {
   cleanDirContents(HUB_DIR, new Set(HUB_INSTALL_PRESERVE_ENTRIES));
   cleanDirContents(CHANNELS_RUNTIME);
   const serverSrc = path.join(packageRoot, "hub-server");
-  cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"]);
+  copyFilteredTree(serverSrc, HUB_DIR, [".ts", ".json", ".lock"]);
   cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
   // Security (redteam B3): chmod 700 CHANNELS_RUNTIME——防其他 user-level 进程
   // 写入恶意 plugin。fs.watch 已默认关闭（hub-server/channel-loader.ts），
@@ -158,6 +158,8 @@ function installCmd(): void {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
   <key>StandardOutPath</key>
   <string>${path.join(HUB_DIR, "hub.log")}</string>
   <key>StandardErrorPath</key>
@@ -314,7 +316,7 @@ function syncCmd(): void {
 
   // 2. Copy hub-server .ts/.json/.lock files to runtime
   //    SYNC_SKIP 防止 hub-server/ 下未来若出现同名 .json 静默覆盖用户运行时配置（hub-config.json 等）。
-  cpDir(serverSrc, HUB_DIR, [".ts", ".json", ".lock"], SYNC_SKIP);
+  copyFilteredTree(serverSrc, HUB_DIR, [".ts", ".json", ".lock"], SYNC_SKIP);
   cleanDirContents(CHANNELS_RUNTIME);
   cpDir(path.join(serverSrc, "channels"), CHANNELS_RUNTIME, [".ts"]);
 
@@ -524,11 +526,12 @@ export function cleanDirContents(dir: string, preserve = new Set<string>()): voi
   }
 }
 
-function copyFilteredTree(src: string, dst: string, exts: string[]): void {
+function copyFilteredTree(src: string, dst: string, exts: string[], skipNames = new Set<string>()): void {
   if (!fs.existsSync(src)) die(`source 不存在: ${src}`);
   fs.mkdirSync(dst, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue;
+    if (skipNames.has(entry.name)) continue;
     const sp = path.join(src, entry.name);
     const dp = path.join(dst, entry.name);
     if (entry.isDirectory()) {
