@@ -147,7 +147,7 @@ function resolveAll(rawEntries: RawScheduleEntry[]): ResolvedEntry[] {
 /**
  * 统一时间规则检查。所有条件都满足才触发。
  */
-function shouldFire(entry: ResolvedEntry): boolean {
+export function shouldFire(entry: ResolvedEntry): boolean {
   const now = new Date();
 
   if (entry.weekdays?.length && !entry.weekdays.includes(now.getDay())) return false;
@@ -346,6 +346,9 @@ function updateState(sender: string): void {
 // ── Schedule ────────────────────────────────────────────────────────────────
 
 const MISSED_WINDOW_MS = 2 * 60 * 60 * 1000;
+// 刚过点的宽限：排期时刻本身可能正好压在任务时刻上（典型：午夜重排在 00:00 跑，
+// 把 00:00 的格子算成"已经过去"），导致该时段任务永远触发不到。
+const FIRE_GRACE_MS = 90 * 1000;
 
 function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server): number {
   const now = Date.now();
@@ -363,7 +366,14 @@ function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server
     if (delay > 0) {
       timers.push(setTimeout(() => fire(entry, server), delay));
       count++;
-    } else if (delay > -MISSED_WINDOW_MS && !entry.one_shot) {
+    } else if (delay > -FIRE_GRACE_MS && !entry.one_shot && shouldFire(entry)) {
+      // 刚过点，还在宽限内 → 立即补触发，不算错过。
+      // 没有这一支时，排在 00:00 的任务会被午夜重排自己判成已过去，永远跑不到。
+      timers.push(setTimeout(() => fire(entry, server), 1000));
+      count++;
+    } else if (delay > -MISSED_WINDOW_MS && !entry.one_shot && shouldFire(entry)) {
+      // shouldFire 必须在这里再查一次：canScheduleToday 只看 start_date/end_date，
+      // 不看 weekdays/days/months，否则"每周日"的任务会在周六被报成今天错过。
       missed.push({
         label: entry.label ?? entry.sender,
         time: timeStr(entry.hour, entry.minute),
