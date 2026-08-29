@@ -147,7 +147,7 @@ function resolveAll(rawEntries: RawScheduleEntry[]): ResolvedEntry[] {
 /**
  * 统一时间规则检查。所有条件都满足才触发。
  */
-function shouldFire(entry: ResolvedEntry): boolean {
+export function shouldFire(entry: ResolvedEntry): boolean {
   const now = new Date();
 
   if (entry.weekdays?.length && !entry.weekdays.includes(now.getDay())) return false;
@@ -276,6 +276,7 @@ async function fire(entry: ResolvedEntry, server: Server): Promise<void> {
 
     appendLog(entry, content);
     updateState(sender);
+    saveState(FIRES_MODULE, markFired(loadState(FIRES_MODULE), entry));
 
     // Auto-delete one_shot
     if (entry.one_shot) {
@@ -343,13 +344,58 @@ function updateState(sender: string): void {
   saveState("global", s);
 }
 
+// ── 已触发记录 ──────────────────────────────────────────────────────────────
+// 错过检测原本只看「墙上时间 − 排期时刻」是否落在 MISSED_WINDOW_MS 内（外加
+// shouldFire 的排期规则），从不查该条目今天是否已经触发过。于是任务时刻之后
+// 2 小时内的任何一次重排——启动、配置热加载、午夜重排在边界上提前几毫秒跑到
+// 前一天——都会把已经跑完的任务重新报成「错过」。global.json 只有 last_fire /
+// today_count 这类全局标量，回答不了「这一条今天跑没跑」，所以另存一份 per-entry 记录。
+
+const FIRES_MODULE = "fires";
+
+/** 条目的稳定标识：来源文件 + 时刻 + 名字。名字缺省时回退到 sender。 */
+export function fireKey(
+  entry: Pick<ResolvedEntry, "hour" | "minute" | "second" | "sender"> &
+    Partial<Pick<ResolvedEntry, "label" | "origin">>,
+): string {
+  const time = `${pad2(entry.hour)}:${pad2(entry.minute)}:${pad2(entry.second)}`;
+  return `${entry.origin ?? ""}|${time}|${entry.label ?? entry.sender}`;
+}
+
+/** 该条目今天是否已经触发过。state 由调用方传入，便于一次重排只读一次文件。 */
+export function hasFiredToday(
+  state: Record<string, unknown>,
+  entry: Parameters<typeof fireKey>[0],
+  today: string = dateStr(),
+): boolean {
+  return state[fireKey(entry)] === today;
+}
+
+/** 记下该条目今天已触发，并顺手清掉非今天的键（状态文件不随时间增长）。 */
+export function markFired(
+  state: Record<string, unknown>,
+  entry: Parameters<typeof fireKey>[0],
+  today: string = dateStr(),
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (v === today) next[k] = v;
+  }
+  next[fireKey(entry)] = today;
+  return next;
+}
+
 // ── Schedule ────────────────────────────────────────────────────────────────
 
 const MISSED_WINDOW_MS = 2 * 60 * 60 * 1000;
+// 刚过点的宽限：排期时刻本身可能正好压在任务时刻上（典型：午夜重排在 00:00 跑，
+// 把 00:00 的格子算成"已经过去"），导致该时段任务永远触发不到。
+const FIRE_GRACE_MS = 90 * 1000;
 
 function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server): number {
   const now = Date.now();
   const today = dateStr();
+  const fires = loadState(FIRES_MODULE);
   const timers: ReturnType<typeof setTimeout>[] = [];
   let count = 0;
   const missed: { label: string; time: string }[] = [];
@@ -363,7 +409,21 @@ function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server
     if (delay > 0) {
       timers.push(setTimeout(() => fire(entry, server), delay));
       count++;
-    } else if (delay > -MISSED_WINDOW_MS && !entry.one_shot) {
+    } else if (delay > -FIRE_GRACE_MS && !entry.one_shot && shouldFire(entry)) {
+      // 刚过点，还在宽限内 → 立即补触发，不算错过。
+      // 没有这一支时，排在 00:00 的任务会被午夜重排自己判成已过去，永远跑不到。
+      timers.push(setTimeout(() => fire(entry, server), 1000));
+      count++;
+    } else if (
+      delay > -MISSED_WINDOW_MS &&
+      !entry.one_shot &&
+      shouldFire(entry) &&
+      !hasFiredToday(fires, entry, today)
+    ) {
+      // shouldFire 必须在这里再查一次：canScheduleToday 只看 start_date/end_date，
+      // 不看 weekdays/days/months，否则"每周日"的任务会在周六被报成今天错过。
+      // hasFiredToday 是第二道闸：跑过就不是错过，否则任务时刻后 2h 内的任何一次
+      // 重排都会把已完成的任务重报一遍（见上方「已触发记录」段的说明）。
       missed.push({
         label: entry.label ?? entry.sender,
         time: timeStr(entry.hour, entry.minute),
