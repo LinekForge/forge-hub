@@ -3,7 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { expandRandom, removeScheduleEntryFromFile, shouldFire } from "./scheduler.js";
+import {
+  expandRandom,
+  fireKey,
+  hasFiredToday,
+  markFired,
+  removeScheduleEntryFromFile,
+  shouldFire,
+} from "./scheduler.js";
 
 const tempDirs: string[] = [];
 
@@ -112,5 +119,50 @@ describe("shouldFire 时间规则", () => {
 
   test("无时间条件时默认可触发", () => {
     expect(shouldFire({ hour: 0, minute: 0, second: 0, sender: "t" } as never)).toBe(true);
+  });
+});
+
+describe("已触发记录（错过检测的第二道闸）", () => {
+  // 回归：错过判定原本只看「墙上时间 − 排期时刻」落在 2h 窗口内 ＋ shouldFire，
+  // 从不查该条目今天是否已经触发过。于是任务时刻之后 2 小时内的任何一次重排
+  // （启动 / 配置热加载 / 午夜重排在边界上提前几毫秒跑），都会把已跑完的任务
+  // 重新报成「错过」。2026-08-22 / 08-23 / 08-28 / 08-29 连续复发。
+  const entry = {
+    hour: 22, minute: 0, second: 0,
+    sender: "engine", label: "洗澡提醒", origin: "shower.json",
+  } as never;
+
+  test("fireKey 对同一条目稳定，对不同时刻/来源不同", () => {
+    expect(fireKey(entry)).toBe(fireKey(entry));
+    expect(fireKey({ ...(entry as object), minute: 30 } as never)).not.toBe(fireKey(entry));
+    expect(fireKey({ ...(entry as object), origin: "other.json" } as never)).not.toBe(fireKey(entry));
+  });
+
+  test("label 缺省时回退到 sender，不会把两个条目挤成同一个键", () => {
+    const a = { hour: 9, minute: 0, second: 0, sender: "briefing", origin: "x.json" } as never;
+    const b = { hour: 9, minute: 0, second: 0, sender: "redline", origin: "x.json" } as never;
+    expect(fireKey(a)).not.toBe(fireKey(b));
+  });
+
+  test("没有记录时 hasFiredToday 为 false", () => {
+    expect(hasFiredToday({}, entry, "2026-08-29")).toBe(false);
+  });
+
+  test("markFired 之后同日为 true、次日为 false", () => {
+    const state = markFired({}, entry, "2026-08-29");
+    expect(hasFiredToday(state, entry, "2026-08-29")).toBe(true);
+    expect(hasFiredToday(state, entry, "2026-08-30")).toBe(false);
+  });
+
+  test("markFired 清掉非当天的键，状态文件不会无限增长", () => {
+    let state: Record<string, unknown> = { "stale.json|09:00:00|旧任务": "2026-01-01" };
+    state = markFired(state, entry, "2026-08-29");
+    expect(Object.keys(state)).toEqual([fireKey(entry)]);
+  });
+
+  test("同一天重复 markFired 不产生第二个键", () => {
+    let state = markFired({}, entry, "2026-08-29");
+    state = markFired(state, entry, "2026-08-29");
+    expect(Object.keys(state)).toHaveLength(1);
   });
 });
