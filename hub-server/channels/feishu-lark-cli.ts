@@ -224,6 +224,37 @@ function startSubscription(): void {
   });
 }
 
+/** 飞书把图片以 "[Image: img_xxx]" / "[图片: img_xxx]" 的形式塞在 content 里。 */
+const IMAGE_PLACEHOLDER = /\[(?:Image|图片):\s*(img_[^\]]+)\]/;
+
+/**
+ * 把 content 里**每一个**图片占位符就地换成 "[图片] <本地路径>"，其余文字原样保留。
+ *
+ * 原实现用 content.match() 只取第一个 key，随后把整个 content 覆盖成那一张的路径——
+ * 一条夹带 N 张图和文字的富文本，到 agent 手里只剩第一张图，文字和其余 N-1 张全部丢失。
+ *
+ * 下载失败的那一张保留原占位符，不牵连同一条消息里其它图片。
+ * download 注入，便于测试。
+ */
+export async function resolveImagePlaceholders(
+  content: string,
+  download: (imageKey: string) => Promise<string | null>,
+): Promise<string> {
+  // 从不带 g 的常量另建带 g 的副本：共享带 g 的正则会因 lastIndex 残留而漏匹配
+  const matches = [...content.matchAll(new RegExp(IMAGE_PLACEHOLDER, "g"))];
+  if (matches.length === 0) return content;
+
+  let out = "";
+  let cursor = 0;
+  for (const m of matches) {
+    const start = m.index ?? 0;
+    const filePath = await download(m[1]);
+    out += content.slice(cursor, start) + (filePath ? `[图片] ${filePath}` : m[0]);
+    cursor = start + m[0].length;
+  }
+  return out + content.slice(cursor);
+}
+
 async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const senderId = (event.sender_id ?? "") as string;
   const chatId = (event.chat_id ?? "") as string;
@@ -268,12 +299,11 @@ async function handleMessage(event: Record<string, unknown>): Promise<void> {
   const messageId = (event.message_id ?? event.id ?? "") as string;
   let content = (event.content ?? "") as string;
 
-  // image key 在 content 里: "[Image: img_v3_xxx]" 或 "[图片: img_v3_xxx]"
-  const imageKeyMatch = content.match(/\[(?:Image|图片):\s*(img_[^\]]+)\]/);
-  if (imageKeyMatch && messageId) {
-    const imageKey = imageKeyMatch[1];
-    const filePath = await downloadFeishuMedia(messageId, "image", imageKey);
-    content = filePath ? `[图片] ${filePath}` : `[图片: ${imageKey}]`;
+  // 一条富文本可以夹带多张图和文字，逐个就地替换、其余文字原样保留
+  if (IMAGE_PLACEHOLDER.test(content) && messageId) {
+    content = await resolveImagePlaceholders(content, (key) =>
+      downloadFeishuMedia(messageId, "image", key),
+    );
   } else if (msgType === "file" && messageId) {
     // file key 可能在 content 里: "[File: file_v3_xxx]"
     const fileKeyMatch = content.match(/\[(?:File|文件):\s*(file_[^\]]+)\]/);
