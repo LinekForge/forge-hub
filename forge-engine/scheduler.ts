@@ -596,6 +596,25 @@ function releasePidLock(): void {
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
+/**
+ * Passive 实例重新竞选的间隔。
+ * active 实例退出后，最坏经过这么久由某个 passive 实例接管调度。
+ */
+const PASSIVE_RETRY_MS = 30_000;
+let passiveRetryTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 本实例当前是否处于 passive（不排程）状态。 */
+export function isPassiveMode(): boolean {
+  return isPassive;
+}
+
+function stopPassiveRetry(): void {
+  if (passiveRetryTimer) {
+    clearInterval(passiveRetryTimer);
+    passiveRetryTimer = null;
+  }
+}
+
 export function stopScheduler(): void {
   clearAll();
   if (midnightTimer) {
@@ -606,20 +625,15 @@ export function stopScheduler(): void {
     clearTimeout(reloadDebounce);
     reloadDebounce = null;
   }
+  stopPassiveRetry();
   releasePidLock();
   isPassive = false;
 }
 
-export async function startScheduler(server: Server): Promise<void> {
-  ensureDirs();
-  initDefaultConfig();
-
-  if (!acquirePidLock()) {
-    isPassive = true;
-    log("🔇 passive mode — 另一个 engine 实例正在调度，本实例跳过定时排程");
-    return;
-  }
-
+/**
+ * 真正开始排程。startScheduler 首次拿到锁、以及 passive 实例事后接管，共用这一段。
+ */
+async function activate(server: Server): Promise<void> {
   const cfg = loadForgeConfig();
   if (Object.keys(cfg.contacts).length === 0) {
     logError("⚠️  engine-config.json 的 contacts 为空——任务通知将缺少 sender_id，请编辑 contacts 字段添加联系人");
@@ -642,4 +656,46 @@ export async function startScheduler(server: Server): Promise<void> {
       }
     }, 100);
   });
+}
+
+/**
+ * Passive 实例的一次竞选尝试。
+ *
+ * active 实例正常退出会删掉锁文件，崩溃则留下 stale 锁——acquirePidLock() 两种都能拿下。
+ * 持锁者仍然活着时必须返回 false，否则就退回 issue #27 的重复触发。
+ *
+ * 导出供测试直接驱动，不必等 interval 到点。
+ */
+export async function retryPassivePromotion(server: Server): Promise<boolean> {
+  if (!isPassive) return false;
+  if (!acquirePidLock()) return false;
+
+  isPassive = false;
+  stopPassiveRetry();
+  log("⬆️  接管调度 — 原 active 实例已退出，本实例升为 active");
+  await activate(server);
+  return true;
+}
+
+export async function startScheduler(server: Server): Promise<void> {
+  ensureDirs();
+  initDefaultConfig();
+
+  if (!acquirePidLock()) {
+    isPassive = true;
+    log("🔇 passive mode — 另一个 engine 实例正在调度，本实例跳过定时排程");
+
+    // active 实例可能先于本实例退出；不重新竞选的话，调度会静默停摆到下次开新 session。
+    stopPassiveRetry();
+    passiveRetryTimer = setInterval(() => {
+      retryPassivePromotion(server).catch((err: unknown) => {
+        logError(`passive 竞选尝试失败: ${String(err)}`);
+      });
+    }, PASSIVE_RETRY_MS);
+    passiveRetryTimer.unref?.();
+
+    return;
+  }
+
+  await activate(server);
 }
