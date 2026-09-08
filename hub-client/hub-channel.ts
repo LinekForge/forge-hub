@@ -19,7 +19,10 @@ import {
 import { z } from "zod/v4-mini";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import os from "node:os";
+
+import { chooseHubStarter, launchdPlistPath, LAUNCHD_LABEL } from "./hub-starter.js";
 import {
   getSessionConfigPaths,
   isChannelMode,
@@ -320,12 +323,37 @@ async function ensureHubRunning(): Promise<HubProbeResult> {
   // Hub not running, try to start it
   log("Hub 未运行，尝试自动启动...");
   try {
-    const hubPath = path.join(HUB_DIR, "hub.ts");
-    const child = spawn(BUN_BINARY, [hubPath], {
-      detached: true,
-      stdio: "ignore",
+    const spawnDetached = (): void => {
+      const hubPath = path.join(HUB_DIR, "hub.ts");
+      const child = spawn(BUN_BINARY, [hubPath], {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+    };
+
+    // 装了 launchd plist 就交给 launchd 启动。自己 detached spawn 会造出一个
+    // launchd 管不到的孤儿：它占着端口，launchd 的 KeepAlive 每 ThrottleInterval
+    // 撞一次，而 `forge-hub sync` 的 bootout 也杀不到它——sync 会报"已重启"，
+    // 实际跑的还是旧进程。没装 plist（或非 macOS）时保持原来的直接 spawn。
+    const starter = chooseHubStarter({
+      platform: process.platform,
+      plistExists: fs.existsSync(launchdPlistPath(os.homedir())),
     });
-    child.unref();
+
+    if (starter === "launchd") {
+      const label = `gui/${process.getuid?.() ?? os.userInfo().uid}/${LAUNCHD_LABEL}`;
+      try {
+        execFileSync("launchctl", ["kickstart", label], { stdio: "ignore" });
+        log("已请求 launchd 启动 Hub");
+      } catch (err) {
+        // service 没 bootstrap 过时 kickstart 会失败——退回直接启动，至少能用
+        logError(`launchctl kickstart 失败，回退到直接启动: ${String(err)}`);
+        spawnDetached();
+      }
+    } else {
+      spawnDetached();
+    }
 
     // Wait for Hub to start
     for (let i = 0; i < 20; i++) {
