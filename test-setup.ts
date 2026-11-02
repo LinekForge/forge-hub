@@ -19,3 +19,11 @@ if (!process.env.FORGE_HUB_DIR) {
     path.join(os.tmpdir(), "forge-hub-test-"),
   );
 }
+
+// forge-engine 的 config.ts 也在模块加载时求值 DATA_DIR；不隔离的话，
+// 跨文件模块缓存会让 scheduler-pid-lock 测试写到真实 ~/.forge-hub/engine-data。
+if (!process.env.FORGE_ENGINE_DATA) {
+  process.env.FORGE_ENGINE_DATA = fs.mkdtempSync(
+    path.join(os.tmpdir(), "forge-engine-test-"),
+  );
+}

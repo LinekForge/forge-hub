@@ -7,6 +7,20 @@
 > [!IMPORTANT]
 > Forge Engine 目前是 **experimental / manual setup**。源码、MCP server 和 CLI 都在仓库里，但 **`forge-hub install` 默认不会部署或注册它**。想用的话，按下面步骤单独配置。
 
+## 运行日志与崩溃可见性
+
+`log()` / `logError()` 除了写 stderr，**同时追加到 `<DATA_DIR>/engine.log`**，超过 2MB 转存 `engine.log.1`（只留一份）。
+
+**为什么需要文件日志**：stderr 是给 MCP 宿主看的，但宿主通常只在**连接建立那一刻**捕获 stderr —— engine 启动之后打印的任何东西都不再被记录。一旦进程异常退出，什么线索都不剩。
+
+实测案例（2026-09-03）：engine 在 00:00–03:00 之间消失，宿主日志无断开记录、系统无崩溃报告、无内存压力事件，调度静默停摆 **10 小时 31 分**、漏跑 12 个任务。事后无从判断死因。
+
+**崩溃捕获**：`uncaughtException` 与 `unhandledRejection` 会把完整堆栈写进 `engine.log`，随后 `stopScheduler()` 释放 PID 锁并退出（exit 1）。
+
+**为什么退出而不是继续跑**：调度器状态可能已损坏，而一个状态损坏的调度器发出的推送比不推送更坏。
+
+**为什么不自动重起**：多实例 + 自动重起 + 抢 PID 锁是本项目已经踩过的坑（`cleanOrphans` + 一次性 `acquirePidLock` 的组合）。恢复由**外部**检测触发人工重连，engine 自己不做进程管理。
+
 ## 架构
 
 ```

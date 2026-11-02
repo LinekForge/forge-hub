@@ -23,6 +23,7 @@ import {
   SCHEDULE_DIR,
   log,
   logError,
+  logFatal,
 } from "./config.js";
 import { startScheduler, stopScheduler } from "./scheduler.js";
 import { resolveTaskTiming } from "./task-timing.js";
@@ -299,7 +300,30 @@ async function main() {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
-  log("engine started");
+  // ── Crash Visibility ─────────────────────────────────────────────────────
+  //
+  // 2026-09-03：engine 在 00:00–03:00 之间消失，宿主日志里没有任何断开记录、
+  // 没有崩溃报告、没有内存压力事件，调度静默停摆 10h31m、漏跑 12 个任务。
+  //
+  // 定时器回调里的未捕获异常在 Bun 下会直接带走进程，而 log() 当时只写 stderr，
+  // 宿主又只在连接建立那一刻捕获 stderr —— **它死之前很可能喊过，只是没人听见。**
+  //
+  // 取舍：抓到之后**退出，不带病续跑**。scheduler 的状态可能已经坏了，
+  // 而一个状态损坏的调度器推送出去的东西，比不推送更坏。
+  // 退出后由外部检测（宿主侧的存活检查）发现并提示人工重连 —— 不做自动重起：
+  // 多实例 + 自动重起 + 抢 PID 锁，正是本项目已经踩过的坑。
+  process.on("uncaughtException", (err) => {
+    logFatal("uncaughtException", err);
+    stopScheduler();          // 释放 PID 锁，别留一个 stale 锁给下一个实例
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    logFatal("unhandledRejection", reason);
+    stopScheduler();
+    process.exit(1);
+  });
+
+  log(`engine started · PID ${process.pid}`);
 }
 
 if (import.meta.main) {

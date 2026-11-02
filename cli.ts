@@ -305,9 +305,29 @@ function installCmd(): void {
 `);
 }
 
+/**
+ * 轮询 predicate 直到为真或超时，返回是否在超时前成立。
+ *
+ * 存在的理由：`launchctl bootout` / `bootstrap` 的退出码只说明命令被接受了，
+ * 不说明进程真的退出或真的起来了。把"发了命令"和"状态真的变了"分开，
+ * 否则就会出现"报告已重启、实际没换进程"。
+ */
+export async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+  intervalMs = 250,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await predicate()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 // ── sync ────────────────────────────────────────────────────────────────────
 
-function syncCmd(): void {
+async function syncCmd(): Promise<void> {
   log("🔄 Forge Hub sync\n");
 
   // 1. Re-stage package snapshot from current source
@@ -336,14 +356,45 @@ function syncCmd(): void {
     const uid = os.userInfo().uid;
     const domain = `gui/${uid}`;
     const label = `${domain}/com.forge-hub`;
+    const baseUrl = process.env.FORGE_HUB_URL ?? "http://localhost:9900";
+
+    // 有任何 HTTP 响应就算活着——状态码不重要，能应答就说明端口后面有 Hub
+    const hubResponding = async (): Promise<boolean> => {
+      try {
+        await fetch(baseUrl, { signal: AbortSignal.timeout(1500) });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     try {
       execFileSync("launchctl", ["bootout", label], { stdio: "ignore" });
     } catch { /* might not be bootstrapped */ }
+
+    // bootout 的退出码只说明命令被接受，不说明进程已经退出。必须等它真的下线：
+    // 否则紧接着的 bootstrap 会撞上仍占着端口的旧进程，launchd 每 ThrottleInterval
+    // 崩一次，而这里照样打印"已重启"。
+    if (!(await waitUntil(async () => !(await hubResponding()), 15_000, 500))) {
+      log("⚠️  旧 Hub 仍在响应，bootout 没能让它下线——它多半不是 launchd 启动的");
+      log("   （hub-client 在 Hub 不可达时会 detached spawn 一个，那种进程不是 launchd 的子进程，bootout 管不到）");
+      log("   运行时文件已同步到磁盘，但跑着的仍是旧代码。手动处理：");
+      log("     lsof -nP -iTCP:9900 -sTCP:LISTEN     # 找出占用者");
+      log(`     kill <PID> && launchctl bootstrap ${domain} ${LAUNCHD_PLIST}`);
+      return;
+    }
+
     try {
       execFileSync("launchctl", ["bootstrap", domain, LAUNCHD_PLIST], { stdio: "inherit" });
-      log("✓ Hub 已重启");
     } catch {
       log(`⚠️  无法重启 Hub。手动执行：launchctl bootout ${label} && launchctl bootstrap ${domain} ${LAUNCHD_PLIST}`);
+      return;
+    }
+
+    if (await waitUntil(hubResponding, 20_000, 500)) {
+      log("✓ Hub 已重启（已验证重新响应）");
+    } else {
+      log("⚠️  bootstrap 已提交，但 Hub 在 20s 内没有恢复响应——查 ~/.forge-hub/hub-stderr.log");
     }
   }
 
@@ -751,7 +802,7 @@ if (import.meta.main) {
       installCmd();
       break;
     case "sync":
-      syncCmd();
+      await syncCmd();
       break;
     case "uninstall":
       uninstallCmd();
