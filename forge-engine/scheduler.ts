@@ -147,7 +147,7 @@ function resolveAll(rawEntries: RawScheduleEntry[]): ResolvedEntry[] {
 /**
  * 统一时间规则检查。所有条件都满足才触发。
  */
-function shouldFire(entry: ResolvedEntry): boolean {
+export function shouldFire(entry: ResolvedEntry): boolean {
   const now = new Date();
 
   if (entry.weekdays?.length && !entry.weekdays.includes(now.getDay())) return false;
@@ -276,6 +276,7 @@ async function fire(entry: ResolvedEntry, server: Server): Promise<void> {
 
     appendLog(entry, content);
     updateState(sender);
+    saveState(FIRES_MODULE, markFired(loadState(FIRES_MODULE), entry));
 
     // Auto-delete one_shot
     if (entry.one_shot) {
@@ -343,13 +344,58 @@ function updateState(sender: string): void {
   saveState("global", s);
 }
 
+// ── 已触发记录 ──────────────────────────────────────────────────────────────
+// 错过检测原本只看「墙上时间 − 排期时刻」是否落在 MISSED_WINDOW_MS 内（外加
+// shouldFire 的排期规则），从不查该条目今天是否已经触发过。于是任务时刻之后
+// 2 小时内的任何一次重排——启动、配置热加载、午夜重排在边界上提前几毫秒跑到
+// 前一天——都会把已经跑完的任务重新报成「错过」。global.json 只有 last_fire /
+// today_count 这类全局标量，回答不了「这一条今天跑没跑」，所以另存一份 per-entry 记录。
+
+const FIRES_MODULE = "fires";
+
+/** 条目的稳定标识：来源文件 + 时刻 + 名字。名字缺省时回退到 sender。 */
+export function fireKey(
+  entry: Pick<ResolvedEntry, "hour" | "minute" | "second" | "sender"> &
+    Partial<Pick<ResolvedEntry, "label" | "origin">>,
+): string {
+  const time = `${pad2(entry.hour)}:${pad2(entry.minute)}:${pad2(entry.second)}`;
+  return `${entry.origin ?? ""}|${time}|${entry.label ?? entry.sender}`;
+}
+
+/** 该条目今天是否已经触发过。state 由调用方传入，便于一次重排只读一次文件。 */
+export function hasFiredToday(
+  state: Record<string, unknown>,
+  entry: Parameters<typeof fireKey>[0],
+  today: string = dateStr(),
+): boolean {
+  return state[fireKey(entry)] === today;
+}
+
+/** 记下该条目今天已触发，并顺手清掉非今天的键（状态文件不随时间增长）。 */
+export function markFired(
+  state: Record<string, unknown>,
+  entry: Parameters<typeof fireKey>[0],
+  today: string = dateStr(),
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (v === today) next[k] = v;
+  }
+  next[fireKey(entry)] = today;
+  return next;
+}
+
 // ── Schedule ────────────────────────────────────────────────────────────────
 
 const MISSED_WINDOW_MS = 2 * 60 * 60 * 1000;
+// 刚过点的宽限：排期时刻本身可能正好压在任务时刻上（典型：午夜重排在 00:00 跑，
+// 把 00:00 的格子算成"已经过去"），导致该时段任务永远触发不到。
+const FIRE_GRACE_MS = 90 * 1000;
 
 function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server): number {
   const now = Date.now();
   const today = dateStr();
+  const fires = loadState(FIRES_MODULE);
   const timers: ReturnType<typeof setTimeout>[] = [];
   let count = 0;
   const missed: { label: string; time: string }[] = [];
@@ -363,7 +409,21 @@ function scheduleOrigin(origin: string, entries: ResolvedEntry[], server: Server
     if (delay > 0) {
       timers.push(setTimeout(() => fire(entry, server), delay));
       count++;
-    } else if (delay > -MISSED_WINDOW_MS && !entry.one_shot) {
+    } else if (delay > -FIRE_GRACE_MS && !entry.one_shot && shouldFire(entry)) {
+      // 刚过点，还在宽限内 → 立即补触发，不算错过。
+      // 没有这一支时，排在 00:00 的任务会被午夜重排自己判成已过去，永远跑不到。
+      timers.push(setTimeout(() => fire(entry, server), 1000));
+      count++;
+    } else if (
+      delay > -MISSED_WINDOW_MS &&
+      !entry.one_shot &&
+      shouldFire(entry) &&
+      !hasFiredToday(fires, entry, today)
+    ) {
+      // shouldFire 必须在这里再查一次：canScheduleToday 只看 start_date/end_date，
+      // 不看 weekdays/days/months，否则"每周日"的任务会在周六被报成今天错过。
+      // hasFiredToday 是第二道闸：跑过就不是错过，否则任务时刻后 2h 内的任何一次
+      // 重排都会把已完成的任务重报一遍（见上方「已触发记录」段的说明）。
       missed.push({
         label: entry.label ?? entry.sender,
         time: timeStr(entry.hour, entry.minute),
@@ -538,6 +598,7 @@ function scheduleMidnight(server: Server): void {
 // ── PID Lock ───────────────────────────────────────────────────────────────
 
 function isProcessAlive(pid: number): boolean {
+  if (pid === process.pid) return true; // 本进程必然存活；CI 上 process.kill(self, 0) 偶发误判为不存在
   try {
     process.kill(pid, 0);
     return true;
@@ -596,6 +657,25 @@ function releasePidLock(): void {
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
+/**
+ * Passive 实例重新竞选的间隔。
+ * active 实例退出后，最坏经过这么久由某个 passive 实例接管调度。
+ */
+const PASSIVE_RETRY_MS = 30_000;
+let passiveRetryTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 本实例当前是否处于 passive（不排程）状态。 */
+export function isPassiveMode(): boolean {
+  return isPassive;
+}
+
+function stopPassiveRetry(): void {
+  if (passiveRetryTimer) {
+    clearInterval(passiveRetryTimer);
+    passiveRetryTimer = null;
+  }
+}
+
 export function stopScheduler(): void {
   clearAll();
   if (midnightTimer) {
@@ -606,20 +686,15 @@ export function stopScheduler(): void {
     clearTimeout(reloadDebounce);
     reloadDebounce = null;
   }
+  stopPassiveRetry();
   releasePidLock();
   isPassive = false;
 }
 
-export async function startScheduler(server: Server): Promise<void> {
-  ensureDirs();
-  initDefaultConfig();
-
-  if (!acquirePidLock()) {
-    isPassive = true;
-    log("🔇 passive mode — 另一个 engine 实例正在调度，本实例跳过定时排程");
-    return;
-  }
-
+/**
+ * 真正开始排程。startScheduler 首次拿到锁、以及 passive 实例事后接管，共用这一段。
+ */
+async function activate(server: Server): Promise<void> {
   const cfg = loadForgeConfig();
   if (Object.keys(cfg.contacts).length === 0) {
     logError("⚠️  engine-config.json 的 contacts 为空——任务通知将缺少 sender_id，请编辑 contacts 字段添加联系人");
@@ -642,4 +717,46 @@ export async function startScheduler(server: Server): Promise<void> {
       }
     }, 100);
   });
+}
+
+/**
+ * Passive 实例的一次竞选尝试。
+ *
+ * active 实例正常退出会删掉锁文件，崩溃则留下 stale 锁——acquirePidLock() 两种都能拿下。
+ * 持锁者仍然活着时必须返回 false，否则就退回 issue #27 的重复触发。
+ *
+ * 导出供测试直接驱动，不必等 interval 到点。
+ */
+export async function retryPassivePromotion(server: Server): Promise<boolean> {
+  if (!isPassive) return false;
+  if (!acquirePidLock()) return false;
+
+  isPassive = false;
+  stopPassiveRetry();
+  log("⬆️  接管调度 — 原 active 实例已退出，本实例升为 active");
+  await activate(server);
+  return true;
+}
+
+export async function startScheduler(server: Server): Promise<void> {
+  ensureDirs();
+  initDefaultConfig();
+
+  if (!acquirePidLock()) {
+    isPassive = true;
+    log("🔇 passive mode — 另一个 engine 实例正在调度，本实例跳过定时排程");
+
+    // active 实例可能先于本实例退出；不重新竞选的话，调度会静默停摆到下次开新 session。
+    stopPassiveRetry();
+    passiveRetryTimer = setInterval(() => {
+      retryPassivePromotion(server).catch((err: unknown) => {
+        logError(`passive 竞选尝试失败: ${String(err)}`);
+      });
+    }, PASSIVE_RETRY_MS);
+    passiveRetryTimer.unref?.();
+
+    return;
+  }
+
+  await activate(server);
 }
