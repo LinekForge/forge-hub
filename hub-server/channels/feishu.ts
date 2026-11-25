@@ -98,6 +98,52 @@ function parseContentJson(raw: string): Record<string, unknown> {
   }
 }
 
+// ── Post 富文本解析（导出，供测试） ─────────────────────────────────────────
+
+/**
+ * 从飞书 post 消息的富文本 JSON 里提取文字 + 文件。
+ *
+ * post 消息 content 形如：
+ *   {"title":"","content":[[{"tag":"text","text":"..."},{"tag":"file","file_key":"...","file_name":"..."}]]}
+ * 只取文字时文件信息整个丢，文件不落盘。这里按序拼接 text，并把 file 下载成
+ * `[文件] 路径`。download 参数注入，便于测试 mock。
+ *
+ * @param contentJson 消息原始 content 字符串
+ * @param download    下载回调 (fileKey, fileName) => 落盘路径或 null
+ * @returns 拼接后的文本（空 content / 解析失败时返回空串）
+ */
+export function extractFeishuPostParts(
+  contentJson: string,
+  download: (fileKey: string, fileName?: string) => Promise<string | null>,
+): Promise<string> {
+  return (async () => {
+    const parsed = parseContentJson(contentJson);
+    const contentArr = parsed.content;
+    if (!Array.isArray(contentArr)) return (parsed.text as string) ?? "";
+
+    const parts: string[] = [];
+    for (const row of contentArr) {
+      if (!Array.isArray(row)) continue;
+      for (const el of row) {
+        if (typeof el !== "object" || el === null) continue;
+        const tag = (el as Record<string, unknown>).tag as string | undefined;
+        if (tag === "text") {
+          const t = (el as Record<string, unknown>).text as string | undefined;
+          if (t) parts.push(t);
+        } else if (tag === "file" || tag === "file_v2") {
+          const fileKey = (el as Record<string, unknown>).file_key as string | undefined;
+          const fileName = (el as Record<string, unknown>).file_name as string | undefined;
+          if (fileKey) {
+            const filePath = await download(fileKey, fileName ?? "file");
+            parts.push(filePath ? `[文件] ${filePath}` : `[文件: ${fileName ?? "file"}]`);
+          }
+        }
+      }
+    }
+    return parts.length > 0 ? parts.join("\n") : ((parsed.text as string) ?? "");
+  })();
+}
+
 // ── Message Handler ─────────────────────────────────────────────────────────
 
 async function handleMessage(data: Record<string, unknown>): Promise<void> {
@@ -147,7 +193,17 @@ async function handleMessage(data: Record<string, unknown>): Promise<void> {
   const parsed = parseContentJson((message.content ?? "") as string);
   let content = (parsed.text ?? "") as string;
 
-  if (msgType === "image" && messageId) {
+  // ── post 富文本（文字 + 附件组合） ────────────────────────────
+  // 飞书 post 消息的 content 是富文本 JSON，形如：
+  //   {"title":"","content":[[{"tag":"text","text":"..."},{"tag":"file","file_key":"...","file_name":"..."}]]}
+  // parseContentJson 只取顶层 .text，post 没有顶层 text 字段 → 文件信息整个丢。
+  // 这里从富文本数组里提取 text 拼接 + file 下载。
+  if (msgType === "post" && messageId) {
+    content = await extractFeishuPostParts(
+      (message.content ?? "") as string,
+      (fileKey, fileName) => downloadFeishuMedia(messageId, "file", fileKey, fileName),
+    );
+  } else if (msgType === "image" && messageId) {
     const imageKey = (parsed.image_key ?? "") as string;
     if (imageKey) {
       const filePath = await downloadFeishuMedia(messageId, "image", imageKey);
